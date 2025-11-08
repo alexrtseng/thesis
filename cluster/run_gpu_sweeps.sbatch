@@ -1,16 +1,14 @@
 #!/bin/bash
+
 #SBATCH --job-name=thesis-gpu-sweeps
-#SBATCH -p gpu
-#SBATCH --constraint=a100          # or v100, or remove to accept any
-#SBATCH --nodes=1
-#SBATCH --ntasks=1                 # 1 task = 1 srun rank
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+#SBATCH --time=24:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=24G
-#SBATCH --time=24:00:00
-#SBATCH --chdir=/home/at2720/thesis/forecasting
-#SBATCH --output=logs/%x_%j.out    # make sure /home/at2720/thesis/forecasting/logs exists BEFORE sbatch
-#SBATCH --error=logs/%x_%j.err
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 
 module purge
 source /scratch/network/$USER/miniforge/etc/profile.d/conda.sh
