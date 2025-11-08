@@ -15,6 +15,8 @@ Strategies:
  - Each process runs a sweep for a single model (count runs-per-model).
  - Staggered start to reduce I/O bursts.
  - Optional GPU assignment via CUDA_VISIBLE_DEVICES round-robin.
+ - When --use-gpus is true, only GPU-capable models (ModelSpec.uses_gpu) are launched.
+ - When --use-gpus is false, only CPU-only models (uses_gpu == False) are launched.
 
 Notes:
  - W&B agents internally spawn runs; avoid too many processes * number of runs.
@@ -221,6 +223,21 @@ def main():
         print(f"Error parsing models: {e}")
         sys.exit(1)
 
+    # GPU/CPU filtering based on ModelSpec.uses_gpu
+    registry = make_registry()
+    if args.use_gpus:
+        filtered = [m for m in model_list if registry[m].uses_gpu]
+        if not filtered:
+            print("No GPU-capable models selected after filtering. Exiting.")
+            sys.exit(0)
+        model_list = filtered
+    else:
+        filtered = [m for m in model_list if not registry[m].uses_gpu]
+        if not filtered:
+            print("No CPU-only models selected after filtering. Exiting.")
+            sys.exit(0)
+        model_list = filtered
+
     # Parse pnodes
     try:
         pnode_ids = [int(tok.strip()) for tok in args.pnode.split(",") if tok.strip()]
@@ -229,7 +246,7 @@ def main():
         sys.exit(1)
 
     print(
-        f"Launching parallel sweeps: pnodes={pnode_ids} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus}"
+        f"Launching parallel sweeps: pnodes={pnode_ids} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu)"
     )
 
     run_parallel(

@@ -58,6 +58,7 @@ class ModelSpec:
     supports_future: bool
     supports_static: bool
     default_params: Dict[str, Any]
+    uses_gpu: bool = False  # True if the underlying implementation can leverage a GPU via PyTorch/Lightning
 
     def sweep_config(self) -> Dict[str, Any]:
         """
@@ -319,6 +320,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=False,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: RNNModel(
             model=cfg.get("model", "LSTM"),
             input_chunk_length=int(cfg.get("input_chunk_length", 60)),
@@ -337,6 +339,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         # does not need training_length
         builder=lambda cfg: BlockRNNModel(
             model=cfg.get("model", "LSTM"),
@@ -354,6 +357,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=False,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: NBEATSModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -367,6 +371,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=False,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: NHiTSModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -380,6 +385,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=False,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: TCNModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 60)),
             output_chunk_length=int(cfg.get("output_chunk_length", 20)),
@@ -396,6 +402,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=False,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: TransformerModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -413,6 +420,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=True,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: TFTModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -428,6 +436,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: DLinearModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -441,6 +450,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: NLinearModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -454,6 +464,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: TiDEModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
@@ -469,6 +480,7 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         supports_future=True,
         supports_static=False,
         default_params={},
+        uses_gpu=True,
         builder=lambda cfg: TSMixerModel(
             input_chunk_length=int(cfg.get("input_chunk_length", 72)),
             output_chunk_length=int(cfg.get("output_chunk_length", 24)),
