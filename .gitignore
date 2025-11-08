@@ -55,6 +55,7 @@ wattour_logic
 *.mo
 *.pot
 */outputs/
+*/output/
 wandb
 # Django stuff:
 *.log
