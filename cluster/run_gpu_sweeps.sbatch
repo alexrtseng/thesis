@@ -27,7 +27,7 @@ echo "NO_PROXY=$NO_PROXY"
 # export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt
 
 # conda env
-micromamba activate ./.venv
+micromamba activate ../.venv
 
 # thread throttles
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
