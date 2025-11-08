@@ -18,11 +18,6 @@ echo "Node: $(hostname)"
 module purge
 module load proxy/default || { echo "proxy/default load failed"; module avail |& grep -i proxy || true; exit 1; }
 
-# show proxy vars so we know it took effect
-echo "HTTP_PROXY=$HTTP_PROXY"
-echo "HTTPS_PROXY=$HTTPS_PROXY"
-echo "NO_PROXY=$NO_PROXY"
-
 # (optional) if you hit SSL cert errors, uncomment the next line and re-run
 # export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt
 
@@ -45,19 +40,6 @@ PYBIN=/scratch/network/$USER/envs/gpu311/bin/python
 # quick diagnostics (these lines appear in logs/%x_%j.out)
 nvidia-smi || true
 $PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
-
-# verify connectivity via proxy from THIS node
-curl -I --max-time 10 https://api.wandb.ai || echo "curl failed"
-$PYBIN - <<'PY'
-import os, requests
-print("HTTP_PROXY:", os.environ.get("HTTP_PROXY"))
-print("HTTPS_PROXY:", os.environ.get("HTTPS_PROXY"))
-try:
-    r = requests.get("https://api.wandb.ai", timeout=10)
-    print("requests status:", r.status_code)
-except Exception as e:
-    print("requests error:", repr(e))
-PY
 
 # launch job
 srun -u "$PYBIN" -m forecasting.cluster_runner \
