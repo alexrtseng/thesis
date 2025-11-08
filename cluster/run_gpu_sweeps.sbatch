@@ -28,12 +28,15 @@ export RUNS_PER_MODEL=${RUNS_PER_MODEL:-5}
 export MAX_PROC=${MAX_PROC:-1}
 export SUBSET=${SUBSET:-0.5}
 
-# Diagnostics (nice to keep)
-nvidia-smi
-python -c "import torch; print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
+# use ABSOLUTE python path so srun never misses it
+PYBIN=/scratch/network/$USER/envs/gpu311/bin/python
 
-# Launch under SLURM
-srun -u python -m forecasting.cluster_runner \
+# quick diag
+nvidia-smi
+$PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
+
+# launch under SLURM
+srun -u "$PYBIN" -m forecasting.cluster_runner \
   --pnode "$PNODES" \
   --models "$MODELS" \
   --runs-per-model "$RUNS_PER_MODEL" \
