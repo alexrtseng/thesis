@@ -12,38 +12,26 @@
 
 set -euo pipefail
 
-# Always start from the directory where you ran `sbatch`
-cd "${SLURM_SUBMIT_DIR:?}"
 echo "Node: $(hostname)"
-echo "CWD : $(pwd)"
 
+# --- initialize module system (handled by -l), then load proxy BEFORE running python
 module purge
 module load proxy/default || { echo "proxy/default load failed"; module avail |& grep -i proxy || true; exit 1; }
 
-# --- micromamba paths (absolute, not ../)
-MMBIN="$PWD/tools/bin/micromamba"
-ENV_PATH="$PWD/.venv"
-
-# Define this BEFORE the shell hook (needed under `set -u`)
-: "${MAMBA_ROOT_PREFIX:=$PWD/.mamba}"
+: "${MAMBA_ROOT_PREFIX:=../.mamba}"
 export MAMBA_ROOT_PREFIX
+# (optional) if you hit SSL cert errors, uncomment the next line and re-run
+# export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt
 
-# Bootstrap micromamba if missing
-if [[ ! -x "$MMBIN" ]]; then
-  mkdir -p "$PWD/tools"
-  curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
-    | tar -xvj -C "$PWD/tools" bin/micromamba
-fi
+# conda env
+eval "$(../tools/bin/micromamba shell hook -s bash)"
+micromamba activate ../.venv
 
-# Enable hook & activate env
-eval "$("$MMBIN" shell hook -s bash)"
-micromamba activate "$ENV_PATH"
-
-# Threads
+# thread throttles
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 
-# Experiment knobs
+# experiment knobs (can override with --export)
 export PNODES=${PNODES:-2156113094}
 export MODELS=${MODELS:-ALL}
 export RUNS_PER_MODEL=${RUNS_PER_MODEL:-5}
@@ -52,11 +40,11 @@ export SUBSET=${SUBSET:-0.5}
 
 PYBIN="$(command -v python)"
 
-# Diagnostics
+# quick diagnostics (these lines appear in logs/%x_%j.out)
 nvidia-smi || true
-"$PYBIN" -c "import sys, torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
+$PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
 
-# Launch
+# launch job
 srun -u "$PYBIN" -m forecasting.cluster_runner \
   --pnode "$PNODES" \
   --models "$MODELS" \
