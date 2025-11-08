@@ -22,6 +22,7 @@ module load proxy/default || { echo "proxy/default load failed"; module avail |&
 # export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-bundle.crt
 
 # conda env
+eval "$(../tools/bin/micromamba shell hook -s bash)"
 micromamba activate ../.venv
 
 # thread throttles
