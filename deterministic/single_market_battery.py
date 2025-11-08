@@ -136,6 +136,8 @@ def deterministic_arbitrage_opt(
     prices_df: pd.DataFrame,
     battery: BatteryParams = DEFAULT_BATTERY,
     verbose: bool = False,
+    require_equivalent_soe: bool = False,
+    initial_charge_mwh: float | None = None,
 ) -> tuple[pd.DataFrame, float]:
     """Solve a simple deterministic arbitrage for a single battery.
 
@@ -156,7 +158,11 @@ def deterministic_arbitrage_opt(
     capacity_mwh = float(battery.capacity_mwh)
     max_charge_mw = float(battery.max_charge_mw)
     max_discharge_mw = float(battery.max_discharge_mw)
-    initial_charge_mwh = float(battery.initial_charge_mwh)
+    initial_charge_mwh = (
+        float(battery.initial_charge_mwh)
+        if initial_charge_mwh is None
+        else float(initial_charge_mwh)
+    )
     in_efficiency = float(battery.in_efficiency)
     out_efficiency = float(battery.out_efficiency)
     self_discharge_percent_per_hour = float(battery.self_discharge_percent_per_hour)
@@ -207,18 +213,23 @@ def deterministic_arbitrage_opt(
         price = float(prices_df.iloc[t]["lmp"])  # $/MWh
         obj_expr += price * (d - c) * dt_hours
 
+    if require_equivalent_soe:
+        model.addConstr(soe[-1] == initial_charge_mwh, name="final_soe_equal_init")
     model.setObjective(obj_expr, gp.GRB.MAXIMIZE)
     model.optimize()
 
     # Extract numeric results
-    result_df = pd.DataFrame(
-        {
-            "state_of_energy_mwh": [v.X for v in soe],
-            "charge_mw": [v.X for v in charge] + [0.0],
-            "discharge_mw": [v.X for v in discharge] + [0.0],
-        },
-        index=times,
-    )
+    if model.Status != gp.GRB.OPTIMAL:
+        raise RuntimeError("Optimization did not find optimal solution")
+    else:
+        result_df = pd.DataFrame(
+            {
+                "state_of_energy_mwh": [v.X for v in soe],
+                "charge_mw": [v.X for v in charge] + [0.0],
+                "discharge_mw": [v.X for v in discharge] + [0.0],
+            },
+            index=times,
+        )
     return result_df, model.ObjVal
 
 

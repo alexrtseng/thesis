@@ -7,8 +7,8 @@ import numpy as np
 import pandas as pd
 from darts import TimeSeries
 from darts.dataprocessing.transformers import Scaler
-
 import wandb
+import wandb.util
 from data.data_output_functions import read_rt_da_with_weather
 from forecasting.transforms import (
     align_on_overlap,
@@ -100,6 +100,7 @@ def train_once(
     project: str,
     entity: Optional[str] = None,
     subset_data_size: float = 1.0,
+    horizon: int = 24 * 12,
 ):
     reg = make_registry()
     spec = reg[model_name]
@@ -122,7 +123,7 @@ def train_once(
 
     wandb.login(key=WANDB_API_KEY)
     with wandb.init(
-        project=project, config=config, name=f"{model_name.value}-{pnode_id}"
+        project=project, config=config, name=f"{model_name.value}-{pnode_id}-{wandb.util.generate_id()}"
     ):
         # Normalize target and covariates using Darts Scaler (fit on training only)
         y_scaler = Scaler()
@@ -226,13 +227,10 @@ def train_once(
 
         # Compute validation predictions & metrics (handle models without val_series)
         try:
-            # Decide horizon based on model capability and validation length
-            horizon = 24 * 5  # 24 hours of 5-min steps
-
-            pred_sig = inspect.signature(model.predict)
+            pred_sig = inspect.signature(model.historical_forecasts)
             predict_kwargs: Dict[str, Any] = {}
             if "series" in pred_sig.parameters:
-                predict_kwargs["series"] = train_y_s
+                predict_kwargs["series"] = val_y_s
             if (
                 train_past_s is not None
                 and val_past_s is not None
@@ -246,32 +244,57 @@ def train_once(
                 and "future_covariates" in pred_sig.parameters
             ):
                 predict_kwargs["future_covariates"] = train_fut_s.append(val_fut_s)
-            preds_s = model.predict(n=len(val_y_s), **predict_kwargs)
-            print(f"Length of preds: {len(preds_s)}")
 
-            # Inverse transform predictions back to original scale for metrics/plots
-            preds = y_scaler.inverse_transform(preds_s)
+            # GET ERROR METRICS HERE
+            preds = model.historical_forecasts(retrain=False, forecast_horizon=horizon, last_points_only=False, **predict_kwargs)
+            val_y_orig = y_scaler.inverse_transform(val_y_s)
+            n_preds = len(preds)
+            preds_arr = np.full((horizon, n_preds), np.nan, dtype=np.float32)
 
-            # Compute per-step metrics up to "horizon"
-            metrics = per_step_metrics(val_y, preds, max_steps=horizon, prefix="val")
-            wandb.summary.update(metrics)
+            mean_err_all = np.full(n_preds, np.nan, dtype=np.float32)
+            mean_err_first12 = np.full(n_preds, np.nan, dtype=np.float32)
+            mean_err_remaining = np.full(n_preds, np.nan, dtype=np.float32)
 
-            # Provide fallback best_val_loss for models lacking internal callback logging
-            if "val_series" not in inspect.signature(model.fit).parameters:
-                # Use RMSE (val_rmse_full) as stand-in
-                if "val_rmse_full" in metrics:
-                    wandb.summary["best_val_loss"] = metrics["val_rmse_full"]
-                elif "val_mse_full" in metrics:
-                    wandb.summary["best_val_loss"] = metrics["val_mse_full"] ** 0.5
+            for i, p in enumerate(preds):
+                p_inv = y_scaler.inverse_transform(p)
+                vals = p_inv.values().flatten()
+                # fill only available horizon steps (some forecasts may be shorter)
+                L = min(len(vals), horizon)
+                preds_arr[:L, i] = vals[:L]
 
-            # Generate and log 3 random daily plots of predictions vs actuals
-            # log_random_day_plots(
-            #     actual=val_y,
-            #     predicted=preds,
-            #     num_days=3,
-            #     title_prefix=f"{model_name.value} - node {pnode_id}",
-            #     wandb_key="val_random_day_plots",
-            # )
+                # try to get matching true values from the validation series
+                true_slice = val_y_orig.slice(p_inv.start_time(), p_inv.end_time())
+                true_vals = true_slice.values().flatten()
+                minlen = min(len(vals), len(true_vals))
+                if minlen > 0:
+                    errs = vals[:minlen] - true_vals[:minlen]
+                    mean_err_all[i] = float(np.nanmean(errs))
+                    first_n = min(12, minlen)
+                    mean_err_first12[i] = float(np.nanmean(errs[:first_n]))
+                    if minlen > first_n:
+                        mean_err_remaining[i] = float(np.nanmean(errs[first_n:]))
+                    else:
+                        mean_err_remaining[i] = float(np.nan)
+
+            # compute per-step metrics (existing helper) and attach the new summaries
+            metrics = per_step_metrics(val_y_orig, preds_arr)
+
+            # Attach per-prediction summary columns and aggregate means
+            metrics["mean_error_all_series"] = mean_err_all
+            metrics["mean_error_first12_series"] = mean_err_first12
+            metrics["mean_error_remaining_series"] = mean_err_remaining
+
+            metrics["mean_error_all"] = float(np.nanmean(mean_err_all))
+            metrics["mean_error_first12"] = float(np.nanmean(mean_err_first12))
+            metrics["mean_error_remaining"] = float(np.nanmean(mean_err_remaining))
+
+            
+
+            
+
+            wandb.summary["best_val_loss"] = metrics["val_rmse_full"]
+
+            
         except Exception as e:
             wandb.summary["metrics_error"] = str(e)
 
@@ -296,6 +319,7 @@ def train_once(
         model.save(str(save_path))
         wandb.summary["model_path"] = str(save_path)
         wandb.summary["model_filename"] = save_path.name
+        wandb.finish(quiet=True)
 
 
 def run_sweep_for_node(
@@ -324,6 +348,7 @@ def run_sweep_for_node(
         )
 
     wandb.agent(sweep_id, function=_fn, project=project, count=count)
+    wandb.finish(quiet=True)
 
 
 def run_all_models_for_node(

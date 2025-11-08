@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import time
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -62,6 +64,97 @@ except Exception:
     fill_missing_5min_slots = _mod.fill_missing_5min_slots  # type: ignore
 
 
+def _process_node_worker(
+    node_id: int,
+    g: pd.DataFrame,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+    reg_series: pd.DataFrame,
+    battery: "BatteryParams",
+    txbx_x: int,
+    reg_missing_5min_steps: int,
+) -> Optional[dict]:
+    """Process a single node's objectives; designed to run in a separate process.
+
+    Returns a dict of computed metrics or None if insufficient data.
+    """
+    try:
+        print(f"Processing node {node_id}...")
+        node_prices = (
+            g[["datetime_beginning_utc", "lmp"]]
+            .dropna()
+            .drop_duplicates(subset=["datetime_beginning_utc"])
+            .set_index("datetime_beginning_utc")
+            .sort_index()
+        )
+        if len(node_prices.index) < 2:
+            return None
+
+        expected_5min = pd.date_range(
+            start=start_ts.floor("5min"), end=end_ts.ceil("5min"), freq="5min", tz="UTC"
+        )
+
+        # Local helper to avoid importing parent's version
+        def _count_missing_5min(
+            index: pd.DatetimeIndex, expected: pd.DatetimeIndex
+        ) -> int:
+            idx = pd.DatetimeIndex(index)
+            idx = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+            return int(len(expected) - len(idx.intersection(expected)))
+
+        lmp_missing_steps = _count_missing_5min(node_prices.index, expected_5min)
+        print(f"  - LMP missing 5-min steps: {lmp_missing_steps}")
+
+        # Fill to 5-min grid using prior-day same-slot only
+        node_prices_filled = fill_missing_5min_slots(
+            node_prices[["lmp"]],
+            expected_index=expected_5min,
+            columns=["lmp"],
+            prior_day_backfill=True,
+            ffill=False,
+            bfill=False,
+        )
+
+        # 1) Arbitrage-only optimization
+        _, arb_profit = deterministic_arbitrage_opt(
+            node_prices_filled[["lmp"]], battery
+        )
+
+        # 2) Regulation-only simple profit (node-agnostic)
+        reg_profit = float(calc_reg_profit(reg_series, battery))
+
+        # 3) Multi-market optimization
+        _, mm_profit = deterministic_reg_arbitrage_battery_opt(
+            reg_series, node_prices_filled
+        )
+
+        # 4) PJM-specific reg+arbitrage optimization
+        _, pjm_profit = pjm_deterministic_reg_arbitrage_battery_opt(
+            reg_series, node_prices_filled
+        )
+
+        # 5) Heuristic txbx
+        try:
+            _, tx_profit = txbx(node_prices_filled[["lmp"]], x=txbx_x, battery=battery)
+        except Exception as e:
+            print(f"  - txbx skipped for node {node_id}: {e}")
+            tx_profit = float("nan")
+
+        return {
+            "pnode_id": int(node_id),
+            "arbitrage_profit": float(arb_profit),
+            "regulation_profit": float(reg_profit),
+            "multi_market_profit": float(mm_profit),
+            "pjm_multi_market_profit": float(pjm_profit),
+            "txbx_profit": float(tx_profit) if pd.notna(tx_profit) else float("nan"),
+            "lmp_missing_5min_steps": int(lmp_missing_steps),
+            "reg_missing_5min_steps": int(reg_missing_5min_steps),
+        }
+    except Exception as e:
+        print(f"Node {node_id} failed: {e}")
+        return None
+
+
 def _to_utc_timestamp(ts: "str | pd.Timestamp") -> pd.Timestamp:
     """Parse to UTC Timestamp, localizing naive values to UTC."""
     t = pd.Timestamp(ts)
@@ -114,7 +207,8 @@ def compute_pjm_node_objectives(
     reg_dir: Optional[Path] = None,
     nodes: Optional[Iterable[int]] = None,
     txbx_x: int = 4,
-    parallel_workers: int = 18,
+    parallel_workers: Optional[int] = None,
+    use_processes: bool = True,
 ) -> pd.DataFrame:
     """Compute per-node objectives from PJM LMP and REG CSVs within a time window.
 
@@ -163,7 +257,7 @@ def compute_pjm_node_objectives(
             raise ValueError("None of the requested nodes have LMP data in the window.")
 
     expected_5min = pd.date_range(
-        start=start_ts.floor("5T"), end=end_ts.ceil("5T"), freq="5T", tz="UTC"
+        start=start_ts.floor("5min"), end=end_ts.ceil("5min"), freq="5min", tz="UTC"
     )
 
     reg_series = reg_win.set_index("datetime_beginning_utc").sort_index()[["mcp"]]
@@ -172,83 +266,34 @@ def compute_pjm_node_objectives(
 
     node_groups = list(lmp_win.groupby("pnode_id", sort=True))
 
-    def _process_node(node_id: int, g: pd.DataFrame) -> Optional[dict]:
-        try:
-            print(f"Processing node {node_id}...")
-            node_prices = (
-                g[["datetime_beginning_utc", "lmp"]]
-                .dropna()
-                .drop_duplicates(subset=["datetime_beginning_utc"])
-                .set_index("datetime_beginning_utc")
-                .sort_index()
-            )
-            if len(node_prices.index) < 2:
-                return None
-
-            lmp_missing_steps = _count_missing_5min(node_prices.index, expected_5min)
-            print(f"  - LMP missing 5-min steps: {lmp_missing_steps}")
-
-            # Fill to 5-min grid using prior-day same-slot only (matches previous behavior)
-            node_prices_filled = fill_missing_5min_slots(
-                node_prices[["lmp"]],
-                expected_index=expected_5min,
-                columns=["lmp"],
-                prior_day_backfill=True,
-                ffill=False,
-                bfill=False,
-            )
-
-            # 1) Arbitrage-only optimization
-            _, arb_profit = deterministic_arbitrage_opt(
-                node_prices_filled[["lmp"]], battery
-            )
-
-            # 2) Regulation-only simple profit (node-agnostic)
-            reg_profit = float(calc_reg_profit(reg_series, battery))
-
-            # 3) Multi-market optimization
-            _, mm_profit = deterministic_reg_arbitrage_battery_opt(
-                reg_series, node_prices_filled
-            )
-
-            # 4) PJM-specific reg+arbitrage optimization
-            _, pjm_profit = pjm_deterministic_reg_arbitrage_battery_opt(
-                reg_series, node_prices_filled
-            )
-
-            # 5) Heuristic txbx
-            try:
-                _, tx_profit = txbx(
-                    node_prices_filled[["lmp"]], x=txbx_x, battery=battery
-                )
-            except Exception as e:
-                print(f"  - txbx skipped for node {node_id}: {e}")
-                tx_profit = float("nan")
-
-            return {
-                "pnode_id": int(node_id),
-                "arbitrage_profit": arb_profit,
-                "regulation_profit": reg_profit,
-                "multi_market_profit": mm_profit,
-                "pjm_multi_market_profit": pjm_profit,
-                "txbx_profit": tx_profit,
-                "lmp_missing_5min_steps": lmp_missing_steps,
-                "reg_missing_5min_steps": reg_missing_steps,
-            }
-        except Exception as e:
-            print(f"Node {node_id} failed: {e}")
-            return None
-
     results: list[dict] = []
     if node_groups:
-        with ThreadPoolExecutor(max_workers=max(1, int(parallel_workers))) as ex:
+        workers = parallel_workers or os.cpu_count() or 1
+        exec_cls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
+        t0 = time.perf_counter()
+        with exec_cls(max_workers=max(1, int(workers))) as ex:
             futures = [
-                ex.submit(_process_node, int(nid), grp) for nid, grp in node_groups
+                ex.submit(
+                    _process_node_worker,
+                    int(nid),
+                    grp,
+                    start_ts,
+                    end_ts,
+                    reg_series,
+                    battery,
+                    txbx_x,
+                    reg_missing_steps,
+                )
+                for nid, grp in node_groups
             ]
             for fut in as_completed(futures):
                 rec = fut.result()
                 if rec:
                     results.append(rec)
+        elapsed = time.perf_counter() - t0
+        print(
+            f"Processed {len(node_groups)} nodes in {elapsed:.2f}s using {'processes' if use_processes else 'threads'} (workers={workers})."
+        )
 
     if not results:
         raise ValueError(
@@ -364,12 +409,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--start",
-        default="2020-10-14 00:00:00+00:00",
-        help="Start datetime, e.g., '2025-06-14 00:00:00+00:00' (UTC recommended)",
+        default="2021-10-15 00:00:00+00:00",
+        help="Start datetime, e.g., '2025-09-25 00:00:00+00:00' (UTC recommended)",
     )
     parser.add_argument(
         "--end",
-        default="2025-10-14 00:00:00+00:00",
+        default="2025-10-13 00:00:00+00:00",
         help="End datetime, e.g., '2025-10-14 00:00:00+00:00' (UTC recommended)",
     )
     args = parser.parse_args()

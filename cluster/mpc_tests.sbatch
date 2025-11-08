@@ -36,4 +36,4 @@ $PYBIN -V
 $PYBIN -c 'import sys; print(sys.executable)'
 
 # run deterministic objectives with default CLI args
-srun -u "$PYBIN" deterministic/run_all_nodes.py
+srun -u "$PYBIN" -m deterministic.mpc_test
