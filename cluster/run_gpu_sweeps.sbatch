@@ -11,6 +11,9 @@
 #SBATCH --ntasks=1
 
 module purge
+module load proxy/default
+echo $HTTP_PROXY
+echo $HTTPS_PROXY
 source /scratch/network/$USER/miniforge/etc/profile.d/conda.sh
 conda activate /scratch/network/$USER/envs/gpu311
 
