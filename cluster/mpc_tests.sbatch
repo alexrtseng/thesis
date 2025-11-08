@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=thesis-run-all-nodes
+#SBATCH --job-name=mpc-tests
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00

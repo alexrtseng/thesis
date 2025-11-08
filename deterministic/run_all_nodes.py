@@ -207,7 +207,7 @@ def compute_pjm_node_objectives(
     reg_dir: Optional[Path] = None,
     nodes: Optional[Iterable[int]] = None,
     txbx_x: int = 4,
-    parallel_workers: Optional[int] = None,
+    parallel_workers: Optional[int] = 16,
     use_processes: bool = True,
 ) -> pd.DataFrame:
     """Compute per-node objectives from PJM LMP and REG CSVs within a time window.
@@ -268,28 +268,66 @@ def compute_pjm_node_objectives(
 
     results: list[dict] = []
     if node_groups:
-        workers = parallel_workers or os.cpu_count() or 1
+        workers = min(parallel_workers, os.cpu_count()) or 1
+        print(f"Using {workers} {'processes' if use_processes else 'threads'} for parallel execution...")
         exec_cls = ProcessPoolExecutor if use_processes else ThreadPoolExecutor
         t0 = time.perf_counter()
-        with exec_cls(max_workers=max(1, int(workers))) as ex:
-            futures = [
-                ex.submit(
-                    _process_node_worker,
-                    int(nid),
-                    grp,
-                    start_ts,
-                    end_ts,
-                    reg_series,
-                    battery,
-                    txbx_x,
-                    reg_missing_steps,
+        with exec_cls(max_workers=max(1, workers)) as ex:
+            # Submit at most `workers` futures at a time to avoid building a huge queue of pickled args
+            pending = set()
+            groups_iter = iter(node_groups)
+
+            # Prime the pool
+            for _ in range(min(workers, len(node_groups))):
+                try:
+                    nid, grp = next(groups_iter)
+                except StopIteration:
+                    break
+                pending.add(
+                    ex.submit(
+                        _process_node_worker,
+                        int(nid),
+                        grp,
+                        start_ts,
+                        end_ts,
+                        reg_series,
+                        battery,
+                        txbx_x,
+                        reg_missing_steps,
+                    )
                 )
-                for nid, grp in node_groups
-            ]
-            for fut in as_completed(futures):
-                rec = fut.result()
-                if rec:
-                    results.append(rec)
+
+            # As each completes, submit the next
+            while pending:
+                for fut in as_completed(pending, timeout=None):
+                    pending.remove(fut)
+                    try:
+                        rec = fut.result()
+                        if rec:
+                            results.append(rec)
+                    except Exception as e:
+                        print(f"Worker failed: {e}")
+                    # Refill from iterator
+                    try:
+                        nid, grp = next(groups_iter)
+                    except StopIteration:
+                        pass
+                    else:
+                        pending.add(
+                            ex.submit(
+                                _process_node_worker,
+                                int(nid),
+                                grp,
+                                start_ts,
+                                end_ts,
+                                reg_series,
+                                battery,
+                                txbx_x,
+                                reg_missing_steps,
+                            )
+                        )
+                    break  # break inner for-loop to re-evaluate pending
+
         elapsed = time.perf_counter() - t0
         print(
             f"Processed {len(node_groups)} nodes in {elapsed:.2f}s using {'processes' if use_processes else 'threads'} (workers={workers})."
@@ -409,7 +447,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--start",
-        default="2021-10-15 00:00:00+00:00",
+        default="2022-10-16 00:00:00+00:00",
         help="Start datetime, e.g., '2025-09-25 00:00:00+00:00' (UTC recommended)",
     )
     parser.add_argument(

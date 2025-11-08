@@ -27,7 +27,7 @@ def read_lmp_folder(lmp_dir: Path, da: bool = False) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
-def read_reg_folder(reg_dir: Path) -> pd.DataFrame:
+def read_reg_folder(reg_dir: Path = Path("data/pjm_reg")) -> pd.DataFrame:
     """
     Load all regulation CSVs, expecting columns:
       - datetime_beginning_utc
@@ -48,6 +48,7 @@ def read_reg_folder(reg_dir: Path) -> pd.DataFrame:
             "UTC"
         )
         dfs.append(df[["datetime_beginning_utc", "mcp"]])
+    print(pd.concat(dfs, ignore_index=True).head(10))
     return pd.concat(dfs, ignore_index=True)
 
 
