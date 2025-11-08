@@ -11,7 +11,6 @@
 #SBATCH --ntasks=1
 
 module purge
-module load proxy/default
 echo $HTTP_PROXY
 echo $HTTPS_PROXY
 source /scratch/network/$USER/miniforge/etc/profile.d/conda.sh
@@ -37,7 +36,7 @@ PYBIN=/scratch/network/$USER/envs/gpu311/bin/python
 # quick diag
 nvidia-smi
 $PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
-
+module load proxy/default
 # launch under SLURM
 srun -u "$PYBIN" -m forecasting.cluster_runner \
   --pnode "$PNODES" \
