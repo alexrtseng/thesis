@@ -36,7 +36,7 @@ export RUNS_PER_MODEL=${RUNS_PER_MODEL:-5}
 export MAX_PROC=${MAX_PROC:-1}
 export SUBSET=${SUBSET:-0.5}
 
-PYBIN=/scratch/network/$USER/envs/gpu311/bin/python
+PYBIN="$(command -v python)"
 
 # quick diagnostics (these lines appear in logs/%x_%j.out)
 nvidia-smi || true
