@@ -32,6 +32,8 @@ import time
 from multiprocessing import Process, Queue
 from typing import List
 
+import torch
+
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.sweep_runner import run_sweep_for_node
 
@@ -115,10 +117,8 @@ def run_parallel(
     if use_gpus:
         cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
         if cuda_visible:
-            available_gpus = [int(x) for x in cuda_visible.split(",") if x.strip()]
-        else:
-            # Heuristic: try indices 0..3, not guaranteed
-            available_gpus = list(range(4))
+            n = torch.cuda.device_count()
+            available_gpus = list(range(n))
 
     terminator = GracefulTerminator()
 
