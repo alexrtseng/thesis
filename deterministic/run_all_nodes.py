@@ -207,7 +207,7 @@ def compute_pjm_node_objectives(
     reg_dir: Optional[Path] = None,
     nodes: Optional[Iterable[int]] = None,
     txbx_x: int = 4,
-    parallel_workers: Optional[int] = 24,
+    parallel_workers: Optional[int] = 12,
     use_processes: bool = True,
 ) -> pd.DataFrame:
     """Compute per-node objectives from PJM LMP and REG CSVs within a time window.
