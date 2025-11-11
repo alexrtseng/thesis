@@ -73,7 +73,17 @@ def _worker(
 ):
     try:
         if gpu_id is not None:
+            # Isolate a single GPU per process and hint Lightning to use it
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            os.environ.setdefault("TORCH_ACCELERATOR", "gpu")
+            os.environ.setdefault("TORCH_DEVICES", "1")
+            # Quick diagnostics
+            try:
+                print(
+                    f"[worker] assigned GPU={gpu_id} cuda_available={torch.cuda.is_available()} visible_count={torch.cuda.device_count()}"
+                )
+            except Exception:
+                pass
         time.sleep(delay_start)
         status_queue.put((model_name.value, "starting"))
         run_sweep_for_node(
@@ -117,10 +127,14 @@ def run_parallel(
     # Simple GPU round robin
     available_gpus = []
     if use_gpus:
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-        if cuda_visible:
-            n = torch.cuda.device_count()
+        n = torch.cuda.device_count()
+        if n > 0:
             available_gpus = list(range(n))
+        else:
+            print(
+                "[warn] --use-gpus requested, but no CUDA GPUs are visible. Falling back to CPU."
+            )
+            use_gpus = False
 
     terminator = GracefulTerminator()
 
@@ -187,7 +201,7 @@ def main():
     parser.add_argument(
         "--pnode",
         type=str,
-        required=True,
+        default="2156113094",
         help="Single PJM node id or comma-separated list (e.g. 111,222,333)",
     )
     parser.add_argument(
@@ -211,9 +225,18 @@ def main():
         default=1.0,
         help="Fraction of most recent data to keep (0<x<=1)",
     )
-    parser.add_argument(
-        "--use-gpus", type=bool, default=True, help="Enable GPU round-robin assignment"
+    # Proper boolean flags for GPU usage
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--use-gpus",
+        dest="use_gpus",
+        action="store_true",
+        help="Enable GPU round-robin assignment",
     )
+    group.add_argument(
+        "--cpu-only", dest="use_gpus", action="store_false", help="Force CPU-only runs"
+    )
+    parser.set_defaults(use_gpus=torch.cuda.is_available())
 
     args = parser.parse_args()
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict
 
+import torch
 from darts.models import (
     ARIMA,
     FFT,
@@ -220,7 +221,20 @@ class ModelSpec:
 
 
 def _torch_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
-    accelerator = config.get("accelerator") or os.getenv("TORCH_ACCELERATOR") or "cpu"
+    # Prefer explicit settings; otherwise auto-detect GPU/MPS and fall back to CPU
+    accel_cfg = (
+        config.get("accelerator") or os.getenv("TORCH_ACCELERATOR") or ""
+    ).lower()
+    if accel_cfg:
+        accelerator = accel_cfg
+    else:
+        if torch.cuda.is_available():
+            accelerator = "gpu"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            accelerator = "mps"
+        else:
+            accelerator = "cpu"
+
     devices = int(config.get("devices", os.getenv("TORCH_DEVICES", 1)))
     return {
         "random_state": int(config.get("random_state", 42)),
