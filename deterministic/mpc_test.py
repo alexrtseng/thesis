@@ -157,8 +157,10 @@ def test_mpc_horizon(start, end, parallel: bool = True, max_workers: int | None 
     b_eq = battery_configs[0]
     for hours in potential_horizons_hours:
         hf_intervals = hours * 12
-        prices_slice = df[: (hf_intervals - (potential_horizons_hours[-1] * 12))]
-        tasks.append((hf_intervals, 0, prices_slice, b_eq, False, label_eq))
+        prices_slice = df[
+            : len(df) + (hf_intervals - (potential_horizons_hours[-1] * 12))
+        ]
+        tasks.append((hf_intervals, 0, prices_slice, b_eq, True, label_eq))
 
     results_rows: dict[str, list[dict]] = {}
 
@@ -321,4 +323,4 @@ if __name__ == "__main__":
     start = pd.Timestamp(year=2024, month=1, day=1, tz="UTC")
     end = pd.Timestamp(year=2025, month=1, day=1, tz="UTC")
     test_mpc_horizon(start, end)
-    test_fidelity_horizon(start, end)
+    # test_fidelity_horizon(start, end)
