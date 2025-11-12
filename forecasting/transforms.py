@@ -83,6 +83,14 @@ class BaseTransformer(ABC):
         inv_df = df.apply(lambda col: cls.inverse_transform(col, *args, **kwargs))
         return TimeSeries.from_dataframe(inv_df, time_col=None)
 
+    @classmethod
+    def transform_darts_timeseries(
+        cls, series: TimeSeries, *args, **kwargs
+    ) -> TimeSeries:
+        df = series.to_dataframe()
+        tr_df = df.apply(lambda col: cls.transform(col, *args, **kwargs))
+        return TimeSeries.from_dataframe(tr_df, time_col=None)
+
 
 class NoneTransform(BaseTransformer):
     @staticmethod

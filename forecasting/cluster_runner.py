@@ -38,6 +38,10 @@ import torch
 
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.sweep_runner import run_sweep_for_node
+from forecasting.torch_utils import configure_fp32_precision
+
+# Configure precision (tf32/ieee) via unified helper; env overrides accepted
+configure_fp32_precision()
 
 
 def _parse_models(raw: str) -> List[ModelName]:
@@ -235,6 +239,10 @@ def main():
     )
     group.add_argument(
         "--cpu-only", dest="use_gpus", action="store_false", help="Force CPU-only runs"
+    )
+    # Backward-friendly alias for CPU flag
+    group.add_argument(
+        "--use-cpu", dest="use_gpus", action="store_false", help="Alias for --cpu-only"
     )
     parser.set_defaults(use_gpus=torch.cuda.is_available())
 

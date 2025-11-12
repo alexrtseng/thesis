@@ -28,7 +28,11 @@ from darts.models import (
 )
 from darts.utils.statistics import SeasonalityMode  # add this import
 
+from forecasting.torch_utils import configure_fp32_precision
 from forecasting.wandb_callback import wandb_logger
+
+# Configure float32/TF32 precision using new APIs when available
+configure_fp32_precision(os.getenv("TORCH_MATMUL_PRECISION", "high"))
 
 
 class ModelName(Enum):
@@ -74,9 +78,9 @@ class ModelSpec:
 
         if name in {"arima"}:
             params = {
-                "p": {"values": [0, 1, 2]},
-                "d": {"values": [0, 1]},
-                "q": {"values": [0, 1, 2]},
+                "p": {"distribution": "int_uniform", "min": 0, "max": 2},
+                "d": {"distribution": "int_uniform", "min": 0, "max": 2},
+                "q": {"distribution": "int_uniform", "min": 0, "max": 2},
             }
         elif name in {"exponentialsmoothing"}:
             params = {
@@ -91,108 +95,164 @@ class ModelSpec:
             }
         elif name in {"fft"}:
             params = {
-                "nr_freqs_to_keep": {"values": [8, 12, 20]},
+                "nr_freqs_to_keep": {
+                    "distribution": "int_uniform",
+                    "min": 6,
+                    "max": 32,
+                },
             }
         elif name in {"kalmanforecaster"}:
             params = {
-                "dim_x": {"values": [2, 4, 6]},
+                "dim_x": {"distribution": "int_uniform", "min": 2, "max": 8},
             }
         elif name in {"rnnmodel"}:
             params = {
-                "input_chunk_length": {"values": [72, 96]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 72,
+                    "max": 192,
+                },
                 "output_chunk_length": {"values": [24]},
-                "hidden_dim": {"values": [64, 128]},
-                "n_rnn_layers": {"values": [1, 2]},
-                "dropout": {"values": [0.0, 0.1]},
+                "hidden_dim": {"distribution": "int_uniform", "min": 32, "max": 256},
+                "n_rnn_layers": {"distribution": "int_uniform", "min": 1, "max": 3},
+                "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.3},
                 "model": {"values": ["LSTM", "GRU"]},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"blockrnnmodel"}:
             params = {
-                "input_chunk_length": {"values": [72, 96]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 72,
+                    "max": 192,
+                },
                 "output_chunk_length": {"values": [24]},
-                "hidden_dim": {"values": [64, 128]},
-                "n_rnn_layers": {"values": [1, 2]},
-                "dropout": {"values": [0.0, 0.1]},
+                "hidden_dim": {"distribution": "int_uniform", "min": 32, "max": 256},
+                "n_rnn_layers": {"distribution": "int_uniform", "min": 1, "max": 3},
+                "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.3},
                 "model": {"values": ["LSTM", "GRU"]},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"nbeatsmodel"}:
             params = {
-                "input_chunk_length": {"values": [96, 168]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 96,
+                    "max": 168,
+                },
                 "output_chunk_length": {"values": [24]},
                 "n_epochs": {"values": [20]},
                 "include_delayed_covariates": {"values": [False, True]},
-                "delayed_steps": {"values": [0, 12, 24]},
+                "delayed_steps": {"distribution": "int_uniform", "min": 0, "max": 48},
             }
         elif name in {"nhitsmodel"}:
             params = {
-                "input_chunk_length": {"values": [96, 168]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 96,
+                    "max": 168,
+                },
                 "output_chunk_length": {"values": [24]},
                 "n_epochs": {"values": [20]},
                 "include_delayed_covariates": {"values": [False, True]},
-                "delayed_steps": {"values": [0, 20, 440]},
+                "delayed_steps": {"distribution": "int_uniform", "min": 0, "max": 440},
             }
         elif name in {"tcnmodel"}:
             params = {
-                "input_chunk_length": {"values": [96]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 72,
+                    "max": 192,
+                },
                 "output_chunk_length": {"values": [24]},
                 "kernel_size": {"values": [3, 5]},
-                "num_filters": {"values": [16, 32]},
+                "num_filters": {"distribution": "int_uniform", "min": 16, "max": 64},
                 "dilation_base": {"values": [2]},
-                "dropout": {"values": [0.0, 0.1]},
+                "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.3},
                 "n_epochs": {"values": [20]},
                 "include_delayed_covariates": {"values": [False, True]},
-                "delayed_steps": {"values": [0, 20, 440]},
+                "delayed_steps": {"distribution": "int_uniform", "min": 0, "max": 440},
             }
         elif name in {"transformermodel"}:
             params = {
-                "input_chunk_length": {"values": [96, 168]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 96,
+                    "max": 168,
+                },
                 "output_chunk_length": {"values": [24]},
-                "d_model": {"values": [128]},
-                "nhead": {"values": [4, 8]},
-                "num_encoder_layers": {"values": [2, 3]},
-                "num_decoder_layers": {"values": [2]},
+                "d_model": {"distribution": "int_uniform", "min": 64, "max": 256},
+                "nhead": {"distribution": "int_uniform", "min": 2, "max": 8},
+                "num_encoder_layers": {
+                    "distribution": "int_uniform",
+                    "min": 2,
+                    "max": 4,
+                },
+                "num_decoder_layers": {
+                    "distribution": "int_uniform",
+                    "min": 1,
+                    "max": 3,
+                },
                 "n_epochs": {"values": [20]},
                 "include_delayed_covariates": {"values": [False, True]},
-                "delayed_steps": {"values": [0, 20, 440]},
+                "delayed_steps": {"distribution": "int_uniform", "min": 0, "max": 440},
             }
         elif name in {"tftmodel"}:
             params = {
-                "input_chunk_length": {"values": [96]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 72,
+                    "max": 168,
+                },
                 "output_chunk_length": {"values": [24]},
-                "hidden_size": {"values": [32, 64]},
-                "lstm_layers": {"values": [1, 2]},
+                "hidden_size": {"distribution": "int_uniform", "min": 32, "max": 128},
+                "lstm_layers": {"distribution": "int_uniform", "min": 1, "max": 3},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"dlinearmodel"}:
             params = {
-                "input_chunk_length": {"values": [168, 336]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 168,
+                    "max": 336,
+                },
                 "output_chunk_length": {"values": [24]},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"nlinearmodel"}:
             params = {
-                "input_chunk_length": {"values": [168, 336]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 168,
+                    "max": 336,
+                },
                 "output_chunk_length": {"values": [24]},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"tidemodel"}:
             params = {
-                "input_chunk_length": {"values": [168, 336]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 168,
+                    "max": 336,
+                },
                 "output_chunk_length": {"values": [24]},
-                "hidden_size": {"values": [64, 128]},
+                "hidden_size": {"distribution": "int_uniform", "min": 32, "max": 256},
                 "num_layers": {"values": [2]},
-                "dropout": {"values": [0.0, 0.1]},
+                "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.2},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"tsmixermodel"}:
             params = {
-                "input_chunk_length": {"values": [168, 336]},
+                "input_chunk_length": {
+                    "distribution": "int_uniform",
+                    "min": 168,
+                    "max": 336,
+                },
                 "output_chunk_length": {"values": [24]},
-                "hidden_size": {"values": [64, 128]},
+                "hidden_size": {"distribution": "int_uniform", "min": 32, "max": 256},
                 "num_layers": {"values": [2]},
-                "dropout": {"values": [0.0, 0.1]},
+                "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.2},
                 "n_epochs": {"values": [20]},
             }
         elif name in {"xgbmodel"}:
@@ -205,18 +265,34 @@ class ModelSpec:
                     ]
                 },
                 "output_chunk_length": {"values": [24]},
-                "max_depth": {"values": [3, 5, 7]},
-                "learning_rate": {"values": [0.02, 0.05, 0.1, 0.2]},
-                "n_estimators": {"values": [300, 600]},
-                "subsample": {"values": [0.6, 0.8, 1.0]},
-                "colsample_bytree": {"values": [0.6, 0.8, 1.0]},
-                "min_child_weight": {"values": [1, 3, 5]},
-                "reg_lambda": {"values": [0.01, 0.1, 1.0, 10.0]},
-                "reg_alpha": {"values": [1e-6, 1e-4, 1e-2]},
+                "max_depth": {"distribution": "int_uniform", "min": 3, "max": 10},
+                "learning_rate": {
+                    "distribution": "log_uniform",
+                    "min": 0.01,
+                    "max": 0.3,
+                },
+                "n_estimators": {"distribution": "int_uniform", "min": 200, "max": 800},
+                "subsample": {"distribution": "uniform", "min": 0.5, "max": 1.0},
+                "colsample_bytree": {"distribution": "uniform", "min": 0.5, "max": 1.0},
+                "min_child_weight": {"distribution": "int_uniform", "min": 1, "max": 6},
+                "reg_lambda": {"distribution": "log_uniform", "min": 1e-3, "max": 10.0},
+                "reg_alpha": {"distribution": "log_uniform", "min": 1e-6, "max": 1e-1},
             }
         else:
             params = {"n_epochs": {"values": [20]}}
 
+        # Shared target transform hyperparameter across models
+        params["target_transform"] = {
+            "values": [
+                "NoneTransform",
+                "AsinhScaler",
+                "SignedLogScaler",
+                "ScaledTanhScaler",
+            ]
+        }
+        # Optional numeric knobs (activated only if chosen transform referenced outside sweep)
+        params["signed_power"] = {"values": [0.5, 0.75]}
+        params["tanh_scale"] = {"values": [50.0, 100.0, 200.0]}
         return {**common, "parameters": params}
 
 
@@ -236,17 +312,30 @@ def _torch_kwargs(config: Dict[str, Any]) -> Dict[str, Any]:
             accelerator = "cpu"
 
     devices = int(config.get("devices", os.getenv("TORCH_DEVICES", 1)))
+    precision = config.get("precision") or os.getenv("TORCH_PRECISION") or "16-mixed"
+    # Allow disabling mixed precision explicitly
+    if precision not in {"16-mixed", "bf16-mixed", "32"}:
+        precision = "16-mixed"
+    accumulate = int(config.get("accumulate_grad_batches", 1))
+    grad_clip = float(config.get("gradient_clip_val", 0.0))
+    trainer_kwargs = {
+        "callbacks": [wandb_logger()],
+        "accelerator": accelerator,
+        "devices": devices,
+        "enable_progress_bar": False,
+        "precision": precision,
+        "benchmark": True,  # enable cuDNN autotuner for speed on constant shapes
+    }
+    if accumulate > 1:
+        trainer_kwargs["accumulate_grad_batches"] = accumulate
+    if grad_clip > 0:
+        trainer_kwargs["gradient_clip_val"] = grad_clip
     return {
         "random_state": int(config.get("random_state", 42)),
         "dropout": float(config.get("dropout", 0.0)),
         "n_epochs": int(config.get("n_epochs", 10)),
         "batch_size": int(config.get("batch_size", 32)),
-        "pl_trainer_kwargs": {
-            "callbacks": [wandb_logger()],
-            "accelerator": accelerator,
-            "devices": devices,
-            "enable_progress_bar": False,
-        },
+        "pl_trainer_kwargs": trainer_kwargs,
         "save_checkpoints": False,
     }
 

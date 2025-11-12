@@ -1,24 +1,29 @@
 import inspect
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
+import wandb.util
 from darts import TimeSeries
 from darts.dataprocessing.transformers import Scaler
+
 import wandb
-import wandb.util
 from data.data_output_functions import read_rt_da_with_weather
 from forecasting.transforms import (
+    BaseTransformer,
+    ScaledTanhScaler,
+    SignedPowerScaler,
     align_on_overlap,
     delayed_past_covariates,
     drop_nan_rows,
+    name_to_transformer,
 )
 
-from .metrics import per_step_metrics
+from .metrics import panel_metrics_from_forecasts
 from .model_zoo import ModelName, make_registry
-import os
 
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
 WANDB_PROJECT_NAME = os.environ.get("WANDB_PROJECT_NAME", "Thesis")
@@ -123,9 +128,41 @@ def train_once(
 
     wandb.login(key=WANDB_API_KEY)
     with wandb.init(
-        project=project, config=config, name=f"{model_name.value}-{pnode_id}-{wandb.util.generate_id()}"
+        project=project,
+        config=config,
+        name=f"{model_name.value}-{pnode_id}-{wandb.util.generate_id()}",
     ):
-        # Normalize target and covariates using Darts Scaler (fit on training only)
+        # Optional target transform BEFORE scaling
+        tt_name = str(config.get("target_transform", "NoneTransform"))
+        transformer_cls = None
+        try:
+            transformer_cls = name_to_transformer(tt_name)
+        except Exception:
+            transformer_cls = None
+        # Set transform parameters if requested
+        if transformer_cls is SignedPowerScaler:
+            SignedPowerScaler.power = float(
+                config.get("signed_power", SignedPowerScaler.power)
+            )
+        if transformer_cls is ScaledTanhScaler:
+            ScaledTanhScaler.scale = float(
+                config.get("tanh_scale", ScaledTanhScaler.scale)
+            )
+        if (
+            transformer_cls
+            and transformer_cls is not BaseTransformer
+            and tt_name != "NoneTransform"
+        ):
+            try:
+                train_y = transformer_cls.transform_darts_timeseries(train_y)
+                val_y = transformer_cls.transform_darts_timeseries(val_y)
+                wandb.summary["target_transform_applied"] = tt_name
+            except Exception as e:
+                wandb.summary["target_transform_error"] = str(e)
+        else:
+            wandb.summary["target_transform_applied"] = "NoneTransform"
+
+        # Normalize target (fit on transformed train segment only)
         y_scaler = Scaler()
         train_y_s = y_scaler.fit_transform(train_y)
         val_y_s = y_scaler.transform(val_y)
@@ -245,56 +282,45 @@ def train_once(
             ):
                 predict_kwargs["future_covariates"] = train_fut_s.append(val_fut_s)
 
-            # GET ERROR METRICS HERE
-            preds = model.historical_forecasts(retrain=False, forecast_horizon=horizon, last_points_only=False, **predict_kwargs)
+            # Historical multi-step forecasts
+            preds = model.historical_forecasts(
+                retrain=False,
+                forecast_horizon=horizon,
+                last_points_only=False,
+                **predict_kwargs,
+            )
             val_y_orig = y_scaler.inverse_transform(val_y_s)
-            n_preds = len(preds)
-            preds_arr = np.full((horizon, n_preds), np.nan, dtype=np.float32)
+            preds_inv = [y_scaler.inverse_transform(p) for p in preds]
+            # Invert custom transform if applied
+            if (
+                transformer_cls
+                and transformer_cls is not BaseTransformer
+                and tt_name != "NoneTransform"
+            ):
+                try:
+                    val_y_orig = transformer_cls.inverse_transform_darts_timeseries(
+                        val_y_orig
+                    )
+                    preds_inv = [
+                        transformer_cls.inverse_transform_darts_timeseries(pi)
+                        for pi in preds_inv
+                    ]
+                except Exception as e:
+                    wandb.summary["target_inverse_error"] = str(e)
 
-            mean_err_all = np.full(n_preds, np.nan, dtype=np.float32)
-            mean_err_first12 = np.full(n_preds, np.nan, dtype=np.float32)
-            mean_err_remaining = np.full(n_preds, np.nan, dtype=np.float32)
-
-            for i, p in enumerate(preds):
-                p_inv = y_scaler.inverse_transform(p)
-                vals = p_inv.values().flatten()
-                # fill only available horizon steps (some forecasts may be shorter)
-                L = min(len(vals), horizon)
-                preds_arr[:L, i] = vals[:L]
-
-                # try to get matching true values from the validation series
-                true_slice = val_y_orig.slice(p_inv.start_time(), p_inv.end_time())
-                true_vals = true_slice.values().flatten()
-                minlen = min(len(vals), len(true_vals))
-                if minlen > 0:
-                    errs = vals[:minlen] - true_vals[:minlen]
-                    mean_err_all[i] = float(np.nanmean(errs))
-                    first_n = min(12, minlen)
-                    mean_err_first12[i] = float(np.nanmean(errs[:first_n]))
-                    if minlen > first_n:
-                        mean_err_remaining[i] = float(np.nanmean(errs[first_n:]))
-                    else:
-                        mean_err_remaining[i] = float(np.nan)
-
-            # compute per-step metrics (existing helper) and attach the new summaries
-            metrics = per_step_metrics(val_y_orig, preds_arr)
-
-            # Attach per-prediction summary columns and aggregate means
-            metrics["mean_error_all_series"] = mean_err_all
-            metrics["mean_error_first12_series"] = mean_err_first12
-            metrics["mean_error_remaining_series"] = mean_err_remaining
-
-            metrics["mean_error_all"] = float(np.nanmean(mean_err_all))
-            metrics["mean_error_first12"] = float(np.nanmean(mean_err_first12))
-            metrics["mean_error_remaining"] = float(np.nanmean(mean_err_remaining))
-
-            
-
-            
-
-            wandb.summary["best_val_loss"] = metrics["val_rmse_full"]
-
-            
+            metrics = panel_metrics_from_forecasts(
+                val_y=val_y_orig,
+                forecasts=preds_inv,
+                prefix="val",
+                horizon=horizon,
+            )
+            wandb.summary["best_val_loss"] = metrics.get("val_rmse_full", float("nan"))
+            # Log scalar metrics
+            scalar_metrics = {
+                k: v for k, v in metrics.items() if isinstance(v, (int, float))
+            }
+            if scalar_metrics:
+                wandb.log(scalar_metrics)
         except Exception as e:
             wandb.summary["metrics_error"] = str(e)
 
@@ -319,7 +345,7 @@ def train_once(
         model.save(str(save_path))
         wandb.summary["model_path"] = str(save_path)
         wandb.summary["model_filename"] = save_path.name
-        wandb.finish(quiet=True)
+        wandb.finish()
 
 
 def run_sweep_for_node(
@@ -348,7 +374,6 @@ def run_sweep_for_node(
         )
 
     wandb.agent(sweep_id, function=_fn, project=project, count=count)
-    wandb.finish(quiet=True)
 
 
 def run_all_models_for_node(
