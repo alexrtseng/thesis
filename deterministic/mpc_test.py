@@ -248,7 +248,7 @@ def test_fidelity_horizon(
     max_workers: int | None = None,
 ):
     # Test varying fidelity levels within a fixed total horizon
-    fidelity_levels = [0, 0.25, 0.5, 1, 2, 4, 8, 12, 24]  # in hours
+    fidelity_levels = [0, (1.0/12.0), (1.0/6.0), 0.25, 0.5, 1, 2, 4, 8, 12, 24]  # in hours
     battery = BatteryParams(
         capacity_mwh=8,
         max_charge_mw=1,
@@ -320,7 +320,7 @@ def test_fidelity_horizon(
 
 
 if __name__ == "__main__":
-    start = pd.Timestamp(year=2024, month=1, day=1, tz="UTC")
+    start = pd.Timestamp(year=2024, month=12, day=20, tz="UTC")
     end = pd.Timestamp(year=2025, month=1, day=1, tz="UTC")
     # test_mpc_horizon(start, end)
     test_fidelity_horizon(start, end)
