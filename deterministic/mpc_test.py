@@ -320,7 +320,7 @@ def test_fidelity_horizon(
 
 
 if __name__ == "__main__":
-    start = pd.Timestamp(year=2024, month=12, day=20, tz="UTC")
+    start = pd.Timestamp(year=2024, month=1, day=1, tz="UTC")
     end = pd.Timestamp(year=2025, month=1, day=1, tz="UTC")
     # test_mpc_horizon(start, end)
     test_fidelity_horizon(start, end)
