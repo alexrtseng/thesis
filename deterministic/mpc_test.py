@@ -45,11 +45,20 @@ def _fidelity_worker(
     total_horizon_hours: int,
     df: pd.DataFrame,
     battery: BatteryParams,
+    use_lf_avg: bool = False,
 ):
     """Worker for fidelity sweeps. Mirrors the sequential math and returns result row."""
+    # work on a local copy and optionally add +/-30min centered average (5-min freq -> window=13)
+    df = df.copy()
+    if use_lf_avg:
+        df["lmp_lf_avg"] = (
+            df["lmp"].rolling(window=13, center=True, min_periods=1).mean()
+        )
+
     hf_horizon = int(fidelity_hours * 12)  # in 5-min intervals
     lf_horizon = math.floor(total_horizon_hours - fidelity_hours)
     correction_factor = int((1 - fidelity_hours + math.floor(fidelity_hours)) * 12)
+
     decisions, value = battery_arb_mpc_tester(
         hf_horizon=hf_horizon,
         lf_horizon=lf_horizon,
@@ -57,12 +66,14 @@ def _fidelity_worker(
             : (len(df) - correction_factor) if correction_factor != 12 else len(df)
         ],
         battery_params=battery,
+        use_lf_avg=use_lf_avg,
     )
     return {
         "fidelity_hours": fidelity_hours,
         "lf_horizon_hours": lf_horizon,
         "value_$": value,
         "steps": len(decisions),
+        "lf_avg": bool(use_lf_avg),  # tag scenario
     }
 
 
@@ -72,6 +83,7 @@ def battery_arb_mpc_tester(
     prices_df: pd.DataFrame,
     battery_params: BatteryParams = DEFAULT_BATTERY,
     require_equivalent_soe: bool = False,
+    use_lf_avg: bool = False,
 ):
     required_horizon = hf_horizon + lf_horizon * 12
     df = prices_df.copy()
@@ -84,6 +96,8 @@ def battery_arb_mpc_tester(
         hf = df.iloc[i : i + hf_horizon].copy()
         lf_indices = [i + hf_horizon + j * 12 for j in range(lf_horizon)]
         lf = df.iloc[lf_indices].copy()
+        if use_lf_avg:
+            lf["lmp"] = lf["lmp_lf_avg"]
         window = pd.concat([hf, lf])
         result_df, _ = deterministic_arbitrage_opt(
             prices_df=window,
@@ -248,7 +262,19 @@ def test_fidelity_horizon(
     max_workers: int | None = None,
 ):
     # Test varying fidelity levels within a fixed total horizon
-    fidelity_levels = [0, (1.0/12.0), (1.0/6.0), 0.25, 0.5, 1, 2, 4, 8, 12, 24]  # in hours
+    fidelity_levels = [
+        0,
+        (1.0 / 12.0),
+        (1.0 / 6.0),
+        0.25,
+        0.5,
+        1,
+        2,
+        4,
+        8,
+        12,
+        24,
+    ]  # in hours
     battery = BatteryParams(
         capacity_mwh=8,
         max_charge_mw=1,
@@ -267,54 +293,116 @@ def test_fidelity_horizon(
     df.rename(columns={"lmp_rt": "lmp"}, inplace=True)
 
     start_time = time.perf_counter()
-    results = []
+    results_no_avg: list[dict] = []
+    results_lf_avg: list[dict] = []
+
     if parallel:
         worker_count = max_workers or os.cpu_count() or 1
         with ProcessPoolExecutor(max_workers=worker_count) as ex:
-            futures = [
-                ex.submit(_fidelity_worker, f, total_horizon_hours, df, battery)
-                for f in fidelity_levels
-            ]
+            futures = {}
+            for f in fidelity_levels:
+                # submit both scenarios for each fidelity level
+                fut_a = ex.submit(
+                    _fidelity_worker, f, total_horizon_hours, df, battery, False
+                )
+                fut_b = ex.submit(
+                    _fidelity_worker, f, total_horizon_hours, df, battery, True
+                )
+                futures[fut_a] = False
+                futures[fut_b] = True
+
             for fut in as_completed(futures):
-                results.append(fut.result())
+                res = fut.result()
+                if futures[fut]:
+                    results_lf_avg.append(res)
+                else:
+                    results_no_avg.append(res)
     else:
         for f in fidelity_levels:
-            results.append(_fidelity_worker(f, total_horizon_hours, df, battery))
+            results_no_avg.append(
+                _fidelity_worker(f, total_horizon_hours, df, battery, use_lf_avg=False)
+            )
+            results_lf_avg.append(
+                _fidelity_worker(f, total_horizon_hours, df, battery, use_lf_avg=True)
+            )
 
-    # keep original order by fidelity
-    results.sort(key=lambda r: r["fidelity_hours"])
-    for r in results:
+    # keep original order by fidelity for both scenarios
+    results_no_avg.sort(key=lambda r: r["fidelity_hours"])
+    results_lf_avg.sort(key=lambda r: r["fidelity_hours"])
+
+    # Print both for quick scan
+    for r in results_no_avg:
         print(
-            f"[Fidelity {r['fidelity_hours']}h] LF Horizon {r['lf_horizon_hours']}h -> value ${r['value_$']:,.2f} (steps={r['steps']})"
+            f"[Fidelity {r['fidelity_hours']}h | no_avg]  LF Horizon {r['lf_horizon_hours']}h -> value ${r['value_$']:,.2f} (steps={r['steps']})"
+        )
+    for r in results_lf_avg:
+        print(
+            f"[Fidelity {r['fidelity_hours']}h | lf_avg]  LF Horizon {r['lf_horizon_hours']}h -> value ${r['value_$']:,.2f} (steps={r['steps']})"
         )
 
-    results_df = pd.DataFrame(results)
+    # Save to CSVs
     output_dir = Path("deterministic/output/mpc")
     output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / "mpc_value_vs_fidelity.csv"
-    results_df.to_csv(csv_path, index=False)
-    print(f"Saved fidelity results to {csv_path}")
 
-    # Plot fidelity hours (x) vs value generated (y)
+    df_no = pd.DataFrame(results_no_avg)
+    df_lf = pd.DataFrame(results_lf_avg)
+
+    csv_no = output_dir / "mpc_value_vs_fidelity_noavg.csv"
+    csv_lf = output_dir / "mpc_value_vs_fidelity_lfavg.csv"
+    df_no.to_csv(csv_no, index=False)
+    df_lf.to_csv(csv_lf, index=False)
+    print(f"Saved fidelity results (no_avg) to {csv_no}")
+    print(f"Saved fidelity results (lf_avg) to {csv_lf}")
+
+    # Combined CSV with scenario column
+    df_no2 = df_no.copy()
+    df_no2["scenario"] = "no_avg"
+    df_lf2 = df_lf.copy()
+    df_lf2["scenario"] = "lf_avg"
+    combined = pd.concat([df_no2, df_lf2], ignore_index=True)
+    combined_path = output_dir / "mpc_value_vs_fidelity_combined.csv"
+    combined.to_csv(combined_path, index=False)
+    print(f"Saved combined fidelity results to {combined_path}")
+
+    # Plot both lines
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(results_df["fidelity_hours"], results_df["value_$"], marker="o")
+    ax.plot(df_no["fidelity_hours"], df_no["value_$"], marker="o", label="No Avg")
+    ax.plot(
+        df_lf["fidelity_hours"], df_lf["value_$"], marker="s", label="LF Avg (rolling)"
+    )
+
     ax.set_xlabel("High-fidelity horizon (hours)")
     ax.set_ylabel("Accumulated First-Step Value ($)")
     ax.set_title("MPC Value vs Fidelity Hours")
     ax.grid(True, alpha=0.35)
-    for _, row in results_df.iterrows():
+
+    # annotate last points for both curves if present
+    if not df_no.empty:
+        last_no = df_no.iloc[-1]
         ax.annotate(
-            f"{row['value_$']:.0f}",
-            (row["fidelity_hours"], row["value_$"]),
+            f"{last_no['value_$']:.0f}",
+            (last_no["fidelity_hours"], last_no["value_$"]),
+            textcoords="offset points",
+            xytext=(0, 6),
+            ha="center",
+        )
+    if not df_lf.empty:
+        last_lf = df_lf.iloc[-1]
+        ax.annotate(
+            f"{last_lf['value_$']:.0f}",
+            (last_lf["fidelity_hours"], last_lf["value_$"]),
             textcoords="offset points",
             xytext=(0, 6),
             ha="center",
         )
 
+    ax.legend(title="Scenario")
+
     png_path = output_dir / "mpc_value_vs_fidelity.png"
     fig.tight_layout()
     fig.savefig(png_path)
-    print(f"Saved fidelity plot to {png_path}")
+    print(f"Saved fidelity plot (both scenarios) to {png_path}")
+
     elapsed = time.perf_counter() - start_time
     print(f"Fidelity sweep completed in {elapsed:.2f}s (parallel={parallel})")
 
