@@ -172,6 +172,10 @@ def _post_run_logging(
     print(f"Running opt metrics took {time.perf_counter() - t0:.3f}s")
 
     # Save model using sweep + run name for traceability: <sweep>__<run>.pkl
+    opt_dict = opt_results[1]
+    if isinstance(opt_dict, dict):
+        metrics.update({f"opt/{k}": v for k, v in opt_dict.items()})
+
     t0 = time.perf_counter()
     out_dir = Path("forecasting/outputs") / str(pnode_id) / model.__class__.__name__
     sweep_id = getattr(wandb.run, "sweep_id", None) or "nosweep"
