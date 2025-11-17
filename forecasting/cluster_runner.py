@@ -40,7 +40,6 @@ import torch
 
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.sweep_runner import build_series_for_node, run_sweep_for_node
-from forecasting.torch_utils import configure_fp32_precision
 
 
 def _parse_models(raw: str) -> List[ModelName]:
@@ -271,9 +270,6 @@ def main():
             )
         else:
             print(f"[mp] start method already '{current}'")
-
-    # Configure precision AFTER setting start method so child processes inherit cleanly
-    configure_fp32_precision()
 
     try:
         model_list = _parse_models(args.models)
