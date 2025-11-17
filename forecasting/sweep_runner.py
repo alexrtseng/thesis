@@ -19,6 +19,8 @@ def run_sweep_for_node(
     count: int = 50,
     subset_data_size: float = 1.0,
 ):
+    if model_name == ModelName.KALMANFORECASTER:
+        subset_data_size = min(0.2, subset_data_size)
     total = len(feature_df)
     keep = max(1, int(total * subset_data_size))
     df = feature_df[-keep:].copy()
