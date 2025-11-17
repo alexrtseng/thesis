@@ -16,6 +16,8 @@ echo "Node: $(hostname)"
 # --- initialize module system (handled by -l), then load proxy BEFORE running python
 module purge
 module load proxy/default || { echo "proxy/default load failed"; module avail |& grep -i proxy || true; exit 1; }
+module load gurobi/9.0.1 || { echo "gurobi load failed"; module avail |& grep -i proxy || true; exit 1; }
+
 
 : "${MAMBA_ROOT_PREFIX:=../.mamba}"
 export MAMBA_ROOT_PREFIX
