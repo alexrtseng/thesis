@@ -26,6 +26,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import multiprocessing as mp
 import os
 import random
 import signal
@@ -40,9 +41,6 @@ import torch
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.sweep_runner import build_series_for_node, run_sweep_for_node
 from forecasting.torch_utils import configure_fp32_precision
-
-# Configure precision (tf32/ieee) via unified helper; env overrides accepted
-configure_fp32_precision()
 
 
 def _parse_models(raw: str) -> List[ModelName]:
@@ -246,6 +244,35 @@ def main():
     parser.set_defaults(use_gpus=torch.cuda.is_available())
 
     args = parser.parse_args()
+
+    # ------------------------------------------------------------------
+    # Start method selection: use 'spawn' for GPU runs to avoid
+    # "Cannot re-initialize CUDA in forked subprocess" errors.
+    # Keep default (often 'fork' on Linux) for CPU-only for lower overhead.
+    # Allow override via env THESIS_MP_START_METHOD.
+    # ------------------------------------------------------------------
+    requested_method = os.getenv(
+        "THESIS_MP_START_METHOD", "spawn" if args.use_gpus else "fork"
+    )
+    current = mp.get_start_method(allow_none=True)
+    if current is None:
+        try:
+            mp.set_start_method(requested_method, force=True)
+            print(
+                f"[mp] start method set to '{requested_method}' (use_gpus={args.use_gpus})"
+            )
+        except RuntimeError as e:
+            print(f"[mp] could not set start method '{requested_method}': {e}")
+    else:
+        if args.use_gpus and current != "spawn":
+            print(
+                f"[mp][warn] current start method '{current}' may cause CUDA fork issues; recommend 'spawn'."
+            )
+        else:
+            print(f"[mp] start method already '{current}'")
+
+    # Configure precision AFTER setting start method so child processes inherit cleanly
+    configure_fp32_precision()
 
     try:
         model_list = _parse_models(args.models)
