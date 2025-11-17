@@ -34,10 +34,11 @@ import time
 from multiprocessing import Process, Queue
 from typing import List
 
+import pandas as pd
 import torch
 
 from forecasting.model_zoo import ModelName, make_registry
-from forecasting.sweep_runner import run_sweep_for_node
+from forecasting.sweep_runner import build_series_for_node, run_sweep_for_node
 from forecasting.torch_utils import configure_fp32_precision
 
 # Configure precision (tf32/ieee) via unified helper; env overrides accepted
@@ -68,6 +69,7 @@ def _parse_models(raw: str) -> List[ModelName]:
 def _worker(
     model_name: ModelName,
     pnode_id: int,
+    feature_df: pd.DataFrame,
     project: str,
     count: int,
     subset_data_size: float,
@@ -93,6 +95,7 @@ def _worker(
         run_sweep_for_node(
             model_name=model_name,
             pnode_id=pnode_id,
+            feature_df=feature_df,
             project=project,
             count=count,
             subset_data_size=subset_data_size,
@@ -117,7 +120,7 @@ class GracefulTerminator:
 
 
 def run_parallel(
-    pnode_ids: List[int],
+    pnode_id: int,
     project: str,
     models: List[ModelName],
     runs_per_model: int,
@@ -125,9 +128,8 @@ def run_parallel(
     subset_data_size: float,
     use_gpus: bool,
 ):
+    feature_df = build_series_for_node(pnode_id)
     status_queue: Queue = Queue()
-    # Track processes explicitly via 'active' list below
-
     # Simple GPU round robin
     available_gpus = []
     if use_gpus:
@@ -144,13 +146,12 @@ def run_parallel(
 
     # Limit number of concurrent processes
     # Build queue of (pnode, model) tasks
-    launch_queue = [(pid, m) for pid in pnode_ids for m in models]
+    launch_queue = models.copy()
     active: List[Process] = []
-
     while launch_queue or active:
         # Launch new processes if slots available
         while launch_queue and len(active) < max_processes:
-            pnode_id, model = launch_queue.pop(0)
+            model = launch_queue.pop(0)
             gpu_id = None
             if available_gpus:
                 gpu_id = available_gpus[len(active) % len(available_gpus)]
@@ -160,6 +161,7 @@ def run_parallel(
                 args=(
                     model,
                     pnode_id,
+                    feature_df,
                     project,
                     runs_per_model,
                     subset_data_size,
@@ -215,10 +217,7 @@ def main():
         help="Comma-separated model names. Use 'ALL' (default) to run every registered model.",
     )
     parser.add_argument(
-        "--project", type=str, default="Thesis", help="W&B project name"
-    )
-    parser.add_argument(
-        "--runs-per-model", type=int, default=20, help="Sweep runs per model"
+        "--runs-per-model", type=int, default=2, help="Sweep runs per model"
     )
     parser.add_argument(
         "--max-proc", type=int, default=2, help="Maximum concurrent processes"
@@ -226,7 +225,7 @@ def main():
     parser.add_argument(
         "--subset-data-size",
         type=float,
-        default=1.0,
+        default=0.05,
         help="Fraction of most recent data to keep (0<x<=1)",
     )
     # Proper boolean flags for GPU usage
@@ -270,19 +269,15 @@ def main():
         model_list = filtered
 
     # Parse pnodes
-    try:
-        pnode_ids = [int(tok.strip()) for tok in args.pnode.split(",") if tok.strip()]
-    except ValueError:
-        print("Invalid --pnode list; must be integers")
-        sys.exit(1)
+    pnode_id = int(args.pnode)
 
     print(
-        f"Launching parallel sweeps: pnodes={pnode_ids} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu)"
+        f"Launching parallel sweeps: pnode={pnode_id} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu)"
     )
 
     run_parallel(
-        pnode_ids=pnode_ids,
-        project=args.project,
+        pnode_id=pnode_id,
+        project="Thesis",
         models=model_list,
         runs_per_model=args.runs_per_model,
         max_processes=args.max_proc,

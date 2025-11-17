@@ -33,9 +33,9 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 # experiment knobs (can override with --export)
 export PNODES=${PNODES:-2156113094}
 export MODELS=${MODELS:-ALL}
-export RUNS_PER_MODEL=${RUNS_PER_MODEL:-5}
-export MAX_PROC=${MAX_PROC:-1}
-export SUBSET=${SUBSET:-0.5}
+export RUNS_PER_MODEL=${RUNS_PER_MODEL:-20}
+export MAX_PROC=${MAX_PROC:-6}
+export SUBSET=${SUBSET:-1.0}
 
 PYBIN="$(command -v python)"
 

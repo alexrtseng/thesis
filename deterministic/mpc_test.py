@@ -13,6 +13,7 @@ from deterministic.single_market_battery import (
     BatteryParams,
     deterministic_arbitrage_opt,
 )
+from deterministic.warm_start_arb_solver import battery_arb
 
 
 def _horizon_worker(
@@ -24,12 +25,13 @@ def _horizon_worker(
     label: str,
 ):
     """Worker for horizon sweeps. Returns a dict with label, hours, value, and steps."""
-    decisions, value = battery_arb_mpc_tester(
+    decisions, value = battery_arb(
         hf_horizon=hf_horizon,
         lf_horizon=lf_horizon,
         prices_df=prices_df,
         battery_params=battery_params,
         require_equivalent_soe=require_equivalent_soe,
+        verbose=False,
     )
     hours = hf_horizon / 12
     return {
@@ -59,7 +61,7 @@ def _fidelity_worker(
     lf_horizon = math.floor(total_horizon_hours - fidelity_hours)
     correction_factor = int((1 - fidelity_hours + math.floor(fidelity_hours)) * 12)
 
-    decisions, value = battery_arb_mpc_tester(
+    decisions, value = battery_arb(
         hf_horizon=hf_horizon,
         lf_horizon=lf_horizon,
         prices_df=df[
@@ -75,55 +77,6 @@ def _fidelity_worker(
         "steps": len(decisions),
         "lf_avg": bool(use_lf_avg),  # tag scenario
     }
-
-
-def battery_arb_mpc_tester(
-    hf_horizon: int,
-    lf_horizon: int,
-    prices_df: pd.DataFrame,
-    battery_params: BatteryParams = DEFAULT_BATTERY,
-    require_equivalent_soe: bool = False,
-    use_lf_avg: bool = False,
-):
-    required_horizon = hf_horizon + lf_horizon * 12
-    df = prices_df.copy()
-    charge_decisions = []
-    discharge_decisions = []
-    timestamps = []
-    prices = []
-    current_soe = battery_params.initial_charge_mwh
-    for i in range(0, len(df) - required_horizon):
-        hf = df.iloc[i : i + hf_horizon].copy()
-        lf_indices = [i + hf_horizon + j * 12 for j in range(lf_horizon)]
-        lf = df.iloc[lf_indices].copy()
-        if use_lf_avg:
-            lf["lmp"] = lf["lmp_lf_avg"]
-        window = pd.concat([hf, lf])
-        result_df, _ = deterministic_arbitrage_opt(
-            prices_df=window,
-            battery=battery_params,
-            require_equivalent_soe=require_equivalent_soe,
-            initial_charge_mwh=current_soe,
-        )
-        charge_decisions.append(result_df.iloc[0]["charge_mw"])
-        discharge_decisions.append(result_df.iloc[0]["discharge_mw"])
-        timestamps.append(df.index[i])
-        prices.append(df.iloc[i]["lmp"])
-        current_soe = result_df.iloc[1]["state_of_energy_mwh"]
-    decisions_df = pd.DataFrame(
-        {
-            "datetime_beginning_utc": timestamps,
-            "price": prices,
-            "charge_mw": charge_decisions,
-            "discharge_mw": discharge_decisions,
-        }
-    )
-    value_generated = (
-        (decisions_df["discharge_mw"] - decisions_df["charge_mw"])
-        * decisions_df["price"]
-        * (5 / 60)
-    ).sum()
-    return decisions_df, value_generated
 
 
 def test_mpc_horizon(start, end, parallel: bool = True, max_workers: int | None = None):
@@ -276,7 +229,7 @@ def test_fidelity_horizon(
         24,
     ]  # in hours
     battery = BatteryParams(
-        capacity_mwh=8,
+        capacity_mwh=4,
         max_charge_mw=1,
         max_discharge_mw=1,
         initial_charge_mwh=0,
@@ -407,8 +360,36 @@ def test_fidelity_horizon(
     print(f"Fidelity sweep completed in {elapsed:.2f}s (parallel={parallel})")
 
 
+def get_perfect_foresight_prices(
+    start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    pnode_id = 2156113094  # Example node
+    lmp_dir = Path("data/pjm_lmps")
+    df = read_lmp_folder(lmp_dir)
+    df = df[df["pnode_id"] == int(pnode_id)]
+    df["datetime_beginning_utc"] = pd.to_datetime(df["datetime_beginning_utc"])
+    df = df.set_index("datetime_beginning_utc").sort_index()
+    df = df.loc[start:end]
+    df.rename(columns={"lmp_rt": "lmp"}, inplace=True)
+
+    return deterministic_arbitrage_opt(
+        prices_df=df[: -24 * 12],
+        battery=BatteryParams(
+            capacity_mwh=4,
+            max_charge_mw=1,
+            max_discharge_mw=1,
+            initial_charge_mwh=0,
+            in_efficiency=0.98,
+            out_efficiency=0.98,
+        ),
+        verbose=True,
+        require_equivalent_soe=True,
+    )
+
+
 if __name__ == "__main__":
     start = pd.Timestamp(year=2024, month=1, day=1, tz="UTC")
     end = pd.Timestamp(year=2025, month=1, day=1, tz="UTC")
-    # test_mpc_horizon(start, end)
-    test_fidelity_horizon(start, end)
+    test_mpc_horizon(start, end)
+    # test_fidelity_horizon(start, end)
+    print(get_perfect_foresight_prices(start, end)[1])

@@ -56,10 +56,10 @@ def name_to_transformer(name: str) -> "BaseTransformer":
     """
     transformers = {
         "NoneTransform": NoneTransform,
-        "SignedLogScaler": SignedLogScaler,
         "AsinhScaler": AsinhScaler,
         "SignedPowerScaler": SignedPowerScaler,
         "ScaledTanhScaler": ScaledTanhScaler,
+        "Clip": Clip,
     }
     if name not in transformers:
         raise ValueError(f"Invalid transformer name: {name}")
@@ -119,12 +119,12 @@ class SignedLogScaler(BaseTransformer):
 class AsinhScaler(BaseTransformer):
     @staticmethod
     def transform(series: pd.Series, *args, **kwargs) -> pd.Series:
-        result = np.arcsinh(series)
+        result = np.arcsinh(series / 100.0)
         return pd.Series(result, index=series.index)
 
     @staticmethod
     def inverse_transform(series: pd.Series, *args, **kwargs) -> pd.Series:
-        result = np.sinh(series)
+        result = 100.0 * np.sinh(series)
         return pd.Series(result, index=series.index)
 
 
@@ -158,3 +158,15 @@ class ScaledTanhScaler(BaseTransformer):
         scale = getattr(ScaledTanhScaler, "scale", 100.0)
         result = scale * np.arctanh(np.clip(series, -0.999999, 0.999999))
         return pd.Series(result, index=series.index)
+
+
+class Clip(BaseTransformer):
+    @staticmethod
+    def transform(series: pd.Series, *args, **kwargs) -> pd.Series:
+        result = series.clip(upper=800)
+        return pd.Series(result, index=series.index)
+
+    @staticmethod
+    def inverse_transform(series: pd.Series, *args, **kwargs) -> pd.Series:
+        # Clipping is not invertible; return the series as is
+        return pd.Series(series, index=series.index)

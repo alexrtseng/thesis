@@ -138,16 +138,8 @@ def deterministic_arbitrage_opt(
     verbose: bool = False,
     require_equivalent_soe: bool = False,
     initial_charge_mwh: float | None = None,
+    use_barrier: bool = True,
 ) -> tuple[pd.DataFrame, float]:
-    """Solve a simple deterministic arbitrage for a single battery.
-
-    prices_df: DataFrame indexed by DatetimeIndex with column 'lmp' (price in $/MWh).
-        battery: BatteryParams with fields capacity_mwh, max_charge_mw, max_discharge_mw,
-            initial_charge_mwh, in_efficiency, out_efficiency, self_discharge_percent_per_hour.
-    Returns a DataFrame indexed by timestamp with columns:
-      state_of_energy_mwh, charge_mw, discharge_mw
-    """
-
     # Basic validation and normalization
     if not isinstance(prices_df.index, pd.DatetimeIndex):
         raise ValueError("prices_df must be indexed by a DatetimeIndex")
@@ -171,6 +163,12 @@ def deterministic_arbitrage_opt(
     model = gp.Model("battery_arbitrage")
     if not verbose:
         model.Params.OutputFlag = 0
+    if use_barrier:
+        # Force barrier algorithm and disable crossover for speed (no basis needed).
+        model.Params.Method = 2  # Barrier
+        # model.Params.Crossover = 0  # Skip crossover
+        model.Params.Presolve = 2  # Aggressive presolve
+        model.Params.BarHomogeneous = 1  # Homogeneous form (often more robust)
 
     times = list(prices_df.index)
     T = len(times)
@@ -223,7 +221,7 @@ def deterministic_arbitrage_opt(
         raise RuntimeError("Optimization did not find optimal solution")
     else:
         result_df = pd.DataFrame(
-            {
+            {                
                 "state_of_energy_mwh": [v.X for v in soe],
                 "charge_mw": [v.X for v in charge] + [0.0],
                 "discharge_mw": [v.X for v in discharge] + [0.0],

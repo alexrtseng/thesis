@@ -37,6 +37,7 @@ from data.data_output_functions import (
     read_reg_folder,
     read_rt_and_day_ahead_prices,
 )
+from forecasting.transforms import AsinhScaler
 
 # Rolling window: 13 x 5-min = ~30 minutes centered
 ROLLING_WINDOW = 13
@@ -188,6 +189,7 @@ def _plot_overlay(
     *,
     show: bool = False,
     freq_hint: str = "week",
+    y_label: str = "Price ($/MWh)",
 ) -> None:
     """
     Plot overlay: RT LMP, DA LMP, REG MCP with centered rolling averages.
@@ -232,7 +234,7 @@ def _plot_overlay(
             label="REG MCP (±30m avg)",
         )
 
-    ax.set_ylabel("Price ($/MWh)")
+    ax.set_ylabel(y_label)
     ax.set_title(title)
     ax.legend(loc="upper right")
 
@@ -282,6 +284,24 @@ def plot_time_spans(config: PlotConfig, *, analysis_year: int = 2025) -> list[Pa
         )
         _plot_overlay(df, title, out_file, show=config.show, freq_hint=freq_hint)
         outputs.append(out_file)
+
+        # Also produce an asinh-transformed variant
+        if getattr(config, "also_asinh", True):
+            df_t = df.copy()
+            for col in ("lmp_rt", "lmp_da", "mcp"):
+                if col in df_t:
+                    df_t[col] = AsinhScaler.transform(df_t[col])
+            title_t = f"{title} (asinh scale)"
+            out_file_t = out_file.with_name(out_file.stem + "_asinh" + out_file.suffix)
+            _plot_overlay(
+                df_t,
+                title_t,
+                out_file_t,
+                show=config.show,
+                freq_hint=freq_hint,
+                y_label="asinh(Price)",
+            )
+            outputs.append(out_file_t)
 
     # 2024 full year (static)
     do_span(
@@ -354,9 +374,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         default=2025,
         help="Analysis year for dynamic extremes (default: 2025)",
     )
+    # Asinh variant plots (enabled by default). Use --no-asinh to disable.
+    parser.add_argument(
+        "--no-asinh",
+        dest="asinh",
+        action="store_false",
+        help="Disable asinh-transformed companion plots",
+    )
+    parser.set_defaults(asinh=True)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     config = PlotConfig(pnode_id=args.pnode, out_dir=Path(args.outdir), show=args.show)
+    # attach runtime flag without changing dataclass signature
+    setattr(config, "also_asinh", args.asinh)
     _ = plot_time_spans(config, analysis_year=args.year)
     return 0
 
