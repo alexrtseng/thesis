@@ -13,15 +13,14 @@ def configure_fp32_precision(default: str = "high") -> None:
       - torch.backends.cudnn.conv.fp32_precision   = {'tf32'|'ieee'}
 
     Input mapping (backwards compat with older envs):
-      - 'high' / 'medium' / 'tf32'  -> use TF32 (fast on Ampere+)
+      - 'high' / 'medium' / 'tf32'  -> TF32 (faster)
       - 'highest' / 'ieee' / '32'   -> strict IEEE FP32
 
     Respects env TORCH_MATMUL_PRECISION if set; otherwise uses `default`.
-    No-ops safely on CPU/MPS or older PyTorch without these attributes.
+    No-ops safely on CPU/MPS or if attributes are missing.
     """
     raw = (os.getenv("TORCH_MATMUL_PRECISION", default) or "").strip().lower()
 
-    # Normalize to new-backend choices
     if raw in {"high", "medium", "tf32"}:
         mm_prec = "tf32"
         conv_prec = "tf32"
@@ -29,16 +28,15 @@ def configure_fp32_precision(default: str = "high") -> None:
         mm_prec = "ieee"
         conv_prec = "ieee"
     else:
-        # Favor speed unless explicitly overridden
         mm_prec = "tf32"
         conv_prec = "tf32"
 
-    # Apply to CUDA backends if available; guard everything so CPU/MPS won’t complain.
     try:
         matmul = getattr(torch.backends.cuda, "matmul", None)
         if matmul is not None and hasattr(matmul, "fp32_precision"):
             matmul.fp32_precision = mm_prec
     except Exception:
+        print("Could not set CUDA matmul fp32_precision")
         pass
 
     try:
@@ -46,7 +44,7 @@ def configure_fp32_precision(default: str = "high") -> None:
         if conv is not None and hasattr(conv, "fp32_precision"):
             conv.fp32_precision = conv_prec
     except Exception:
+        print("Could not set cuDNN conv fp32_precision")
         pass
 
-    # IMPORTANT: do not call torch.set_float32_matmul_precision() here,
-    # as it now emits a deprecation-style warning about legacy APIs.
+    # Do NOT call torch.set_float32_matmul_precision() here (legacy).
