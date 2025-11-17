@@ -21,6 +21,12 @@ def run_sweep_for_node(
 ):
     if model_name == ModelName.KALMANFORECASTER:
         subset_data_size = min(0.2, subset_data_size)
+    elif model_name == ModelName.AUTO_THETA:
+        subset_data_size = min(0.2, subset_data_size)
+    elif model_name == ModelName.AUTO_EXPONENTIALSMOOTHING:
+        subset_data_size = min(0.5, subset_data_size)
+    elif model_name == ModelName.AUTO_ARIMA:
+        subset_data_size = min(0.5, subset_data_size)
     total = len(feature_df)
     keep = max(1, int(total * subset_data_size))
     df = feature_df[-keep:].copy()

@@ -150,7 +150,7 @@ def plot_opt_vs_perf_samples(
     preds_aligned = preds_df.reindex(combined_df.index)
 
     # Horizons to show
-    horizons_to_plot = [1, 3, 6, 12, 24]
+    horizons_to_plot = [1, 6, 24]
     horizon_cols = [f"h_{h}" for h in horizons_to_plot]
 
     # ---- DAY PRICE & HORIZONS FIGURE ----

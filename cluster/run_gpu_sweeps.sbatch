@@ -39,6 +39,7 @@ export MODELS=${MODELS:-ALL}
 export RUNS_PER_MODEL=${RUNS_PER_MODEL:-50}
 export MAX_PROC=${MAX_PROC:-4}
 export SUBSET=${SUBSET:-1.0}
+export TORCH_PRECISION=bf16-mixed
 
 PYBIN="$(command -v python)"
 

@@ -36,8 +36,9 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 export PNODES=${PNODES:-2156113094}
 export MODELS=${MODELS:-ALL}
 export RUNS_PER_MODEL=${RUNS_PER_MODEL:-20}
-export MAX_PROC=${MAX_PROC:-6}
+export MAX_PROC=${MAX_PROC:-1}
 export SUBSET=${SUBSET:-1.0}
+export TORCH_PRECISION=bf16-mixed
 
 PYBIN="$(command -v python)"
 
