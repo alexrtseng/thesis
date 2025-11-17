@@ -31,11 +31,9 @@ from darts.models.forecasting.torch_forecasting_model import (
 from pytorch_lightning.callbacks import EarlyStopping
 
 # (Removed direct torchmetrics imports; using torch.nn losses via _resolve_loss())
-from forecasting.torch_utils import configure_fp32_precision
 from forecasting.wandb_callback import wandb_logger
 
 # Configure float32/TF32 precision using new APIs when available
-configure_fp32_precision(os.getenv("TORCH_MATMUL_PRECISION", "high"))
 early_stopper = EarlyStopping(monitor="val_loss", patience=5, mode="min")
 
 
