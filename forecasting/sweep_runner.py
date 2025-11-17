@@ -1,5 +1,3 @@
-import math
-
 import pandas as pd
 
 import wandb
@@ -20,7 +18,6 @@ def run_sweep_for_node(
     project: str,
     count: int = 50,
     subset_data_size: float = 1.0,
-    num_agents: int = 1,
 ):
     if model_name == ModelName.KALMANFORECASTER:
         subset_data_size = min(0.2, subset_data_size)
@@ -51,10 +48,7 @@ def run_sweep_for_node(
             post_run_logging=True,
         )
 
-    for _agent in range(num_agents):
-        wandb.agent(
-            sweep_id, function=_fn, project=project, count=math.ceil(count / num_agents)
-        )
+    wandb.agent(sweep_id, function=_fn, project=project, count=count)
 
 
 if __name__ == "__main__":

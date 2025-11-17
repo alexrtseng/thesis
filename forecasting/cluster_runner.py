@@ -96,7 +96,6 @@ def _worker(
             project=project,
             count=count,
             subset_data_size=subset_data_size,
-            num_agents=3,
         )
         status_queue.put((model_name.value, "completed"))
     except Exception as e:
