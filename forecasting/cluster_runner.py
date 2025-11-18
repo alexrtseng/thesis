@@ -40,7 +40,7 @@ import torch
 
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.sweep_runner import build_series_for_node, run_sweep_for_node
-torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
 def _parse_models(raw: str) -> List[ModelName]:
     reg = make_registry()
