@@ -210,6 +210,7 @@ def _post_run_logging(
     metrics_prefixed = {f"metrics/{k}": v for k, v in metrics.items()}
     wandb.summary.update(metrics_prefixed)
     wandb.summary["subset_data_size"] = subset_data_size
+    wandb.summary["model_class"] = model.__class__.__name__
     wandb.summary["save_dir"] = str(save_dir)
     wandb.finish()
     print(f"W&B logging took {time.perf_counter() - t0:.3f}s")

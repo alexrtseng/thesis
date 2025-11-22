@@ -201,23 +201,23 @@ def run_parallel(
     print("[done] All model sweeps finished or terminated.")
 
 
-# def run_not_parallel(
-#     pnode_id: int,
-#     project: str,
-#     models: List[ModelName],
-#     runs_per_model: int,
-#     subset_data_size: float,
-# ):
-#     feature_df = build_series_for_node(pnode_id)
-#     for model in models:
-#         run_sweep_for_node(
-#             model_name=model,
-#             pnode_id=pnode_id,
-#             feature_df=feature_df,
-#             project=project,
-#             count=runs_per_model,
-#             subset_data_size=subset_data_size,
-#         )
+def run_not_parallel(
+    pnode_id: int,
+    project: str,
+    models: List[ModelName],
+    runs_per_model: int,
+    subset_data_size: float,
+):
+    feature_df = build_series_for_node(pnode_id)
+    for model in models:
+        run_sweep_for_node(
+            model_name=model,
+            pnode_id=pnode_id,
+            feature_df=feature_df,
+            project=project,
+            count=runs_per_model,
+            subset_data_size=subset_data_size,
+        )
 
 
 def main():
@@ -319,24 +319,24 @@ def main():
         f"Launching parallel sweeps: pnode={pnode_id} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu)"
     )
 
-    # if args.use_gpus:
-    #     run_not_parallel(
-    #         pnode_id=pnode_id,
-    #         project="Thesis",
-    #         models=model_list,
-    #         runs_per_model=args.runs_per_model,
-    #         subset_data_size=args.subset_data_size,
-    #     )
-    # else:
-    run_parallel(
-        pnode_id=pnode_id,
-        project="Thesis",
-        models=model_list,
-        runs_per_model=args.runs_per_model,
-        max_processes=args.max_proc,
-        subset_data_size=args.subset_data_size,
-        use_gpus=args.use_gpus,
-    )
+    if args.use_gpus:
+        run_not_parallel(
+            pnode_id=pnode_id,
+            project="Thesis",
+            models=model_list,
+            runs_per_model=args.runs_per_model,
+            subset_data_size=args.subset_data_size,
+        )
+    else:
+        run_parallel(
+            pnode_id=pnode_id,
+            project="Thesis",
+            models=model_list,
+            runs_per_model=args.runs_per_model,
+            max_processes=args.max_proc,
+            subset_data_size=args.subset_data_size,
+            use_gpus=args.use_gpus,
+        )
 
 
 if __name__ == "__main__":
