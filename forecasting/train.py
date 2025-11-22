@@ -149,6 +149,7 @@ def _post_run_logging(
     actual_val,
     model,
     pnode_id,
+    subset_data_size,
     day_start: pd.Timestamp = None,
     week_start: pd.Timestamp = None,
     show_graphs: bool = False,
@@ -208,6 +209,7 @@ def _post_run_logging(
     t0 = time.perf_counter()
     metrics_prefixed = {f"metrics/{k}": v for k, v in metrics.items()}
     wandb.summary.update(metrics_prefixed)
+    wandb.summary["subset_data_size"] = subset_data_size
     wandb.summary["save_dir"] = str(save_dir)
     wandb.finish()
     print(f"W&B logging took {time.perf_counter() - t0:.3f}s")
@@ -220,6 +222,7 @@ def train_hf_model(
     model_name: ModelName,
     config: Dict[str, Any],
     pnode_id: int,
+    subset_data_size: float,
     verbose: bool = False,
     post_run_logging: bool = False,
     day_start: pd.Timestamp = None,
@@ -240,6 +243,7 @@ def train_hf_model(
         project=WANDB_PROJECT_NAME,
         config=config,
         name=run_name,
+        settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off")
     ):
         reg = make_registry()
         spec = reg[model_name]
@@ -388,6 +392,7 @@ def train_hf_model(
                 actual_val,
                 model,
                 pnode_id,
+                subset_data_size=subset_data_size,
                 day_start=day_start,
                 week_start=week_start,
                 show_graphs=show_graphs,
@@ -414,6 +419,7 @@ def test_fut_cov_train():
             config,
             verbose=True,
             pnode_id=2156113094,
+            subset_data_size=len(feature_df) / (12 * 24 * 365 * 5),
         )
         print("Getting df")
         t0 = time.perf_counter()
@@ -454,6 +460,7 @@ def test_post_run_logging():
             verbose=True,
             pnode_id=2156113094,
             post_run_logging=True,
+            subset_data_size=len(feature_df) / (12 * 24 * 365 * 5),
             # day_start=feature_df.index[-9000].normalize(),
             # week_start=feature_df.index[-9000].normalize(),
             show_graphs=True,

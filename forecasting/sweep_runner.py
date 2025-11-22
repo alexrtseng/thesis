@@ -44,6 +44,7 @@ def run_sweep_for_node(
             feature_df=df,
             model_name=model_name,
             pnode_id=pnode_id,
+            subset_data_size=subset_data_size,
             config=config or {},
             post_run_logging=True,
         )
