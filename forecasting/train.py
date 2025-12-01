@@ -30,6 +30,7 @@ from forecasting.transforms import name_to_transformer
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
 WANDB_PROJECT_NAME = os.environ.get("WANDB_PROJECT_NAME", "Thesis")
 PREDICT_ROLLING_WINDOW_SIZE = 10000
+GRANULAR_OPT_METRICS = os.environ.get("GRANULAR_OPT_METRICS", "0") == "1"
 
 FEATURE_COLUMNS = [
     # "lmp_rt", this is the target
@@ -170,7 +171,7 @@ def _post_run_logging(
 
     print("Running opt metrics")
     t0 = time.perf_counter()
-    opt_results = short_horizon_pred_performance(preds, preds_df)
+    opt_results = short_horizon_pred_performance(preds, preds_df, GRANULAR_OPT_METRICS)
     print(f"Running opt metrics took {time.perf_counter() - t0:.3f}s")
 
     # Save model using sweep + run name for traceability: <sweep>__<run>.pkl

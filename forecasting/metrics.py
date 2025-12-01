@@ -34,6 +34,7 @@ def mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 def _short_horizon_pred_performance(
     preds: list[TimeSeries], prices_df: pd.DataFrame, hf_horizon: int
 ) -> pd.DataFrame:
+    print(f"Running short horizon performance with hf_horizon={hf_horizon}")
     # build prices_df_structure: hf_horizon 5-min steps then remaining day hourly
     df = prices_df.copy()
     start_time = prices_df.index[0]
@@ -93,7 +94,7 @@ def _short_horizon_pred_performance(
 
 
 def short_horizon_pred_performance(
-    preds: list[TimeSeries], preds_df: pd.DataFrame
+    preds: list[TimeSeries], preds_df: pd.DataFrame, granular_metrics: bool = False
 ) -> tuple[pd.DataFrame, Dict[str, float]]:
     start = preds[0].time_index[0] - pd.Timedelta(minutes=5)
     end = preds[-1].time_index[0] - pd.Timedelta(minutes=5)
@@ -104,38 +105,43 @@ def short_horizon_pred_performance(
         prices_df=df,
         require_equivalent_soe=True,
     )
-    for_24_decisions = _short_horizon_pred_performance(preds, df, 24)[
-        ["charge_mw", "discharge_mw", "lmp"]
-    ]
+    if granular_metrics:
+        for_24_decisions = _short_horizon_pred_performance(preds, df, 24)[
+            ["charge_mw", "discharge_mw", "lmp"]
+        ]
     for_12_decisions = _short_horizon_pred_performance(preds, df, 12)[
         ["charge_mw", "discharge_mw"]
     ]
-    for_9_decisions = _short_horizon_pred_performance(preds, df, 9)[
-        ["charge_mw", "discharge_mw"]
-    ]
+    if granular_metrics:
+        for_9_decisions = _short_horizon_pred_performance(preds, df, 9)[
+            ["charge_mw", "discharge_mw"]
+        ]
     for_6_decisions = _short_horizon_pred_performance(preds, df, 6)[
         ["charge_mw", "discharge_mw"]
     ]
     for_3_decisions = _short_horizon_pred_performance(preds, df, 3)[
         ["charge_mw", "discharge_mw"]
     ]
-    for_1_decisions = _short_horizon_pred_performance(preds, df, 1)[
-        ["charge_mw", "discharge_mw"]
-    ]
+    if granular_metrics:
+        for_1_decisions = _short_horizon_pred_performance(preds, df, 1)[
+            ["charge_mw", "discharge_mw"]
+        ]
     # align and concatenate on index, keeping both sets of columns with clear suffixes
-    combined_decisions = pd.concat(
-        [
-            perf_decisions.add_suffix("_perf"),
-            for_24_decisions.add_suffix("_24"),
-            for_12_decisions.add_suffix("_12"),
-            for_9_decisions.add_suffix("_9"),
-            for_6_decisions.add_suffix("_6"),
-            for_3_decisions.add_suffix("_3"),
-            for_1_decisions.add_suffix("_1"),
-        ],
-        axis=1,
-        join="outer",
-    )
+    frames = [perf_decisions.add_suffix("_perf")]
+
+    # always include these horizons
+    frames.append(for_12_decisions.add_suffix("_12"))
+    frames.append(for_6_decisions.add_suffix("_6"))
+    frames.append(for_3_decisions.add_suffix("_3"))
+
+    # include granular horizons only when requested
+    if granular_metrics:
+        # keep 24 close to perf so lmp_24 is available for perf calculation
+        frames.insert(1, for_24_decisions.add_suffix("_24"))
+        frames.append(for_9_decisions.add_suffix("_9"))
+        frames.append(for_1_decisions.add_suffix("_1"))
+
+    combined_decisions = pd.concat(frames, axis=1, join="outer")
     combined_decisions = combined_decisions.sort_index()
     combined_decisions = combined_decisions.dropna(how="any")
     perf_val = np.sum(

@@ -34,7 +34,8 @@ from pytorch_lightning.callbacks import EarlyStopping
 from forecasting.wandb_callback import wandb_logger
 
 # Configure float32/TF32 precision using new APIs when available
-early_stopper = EarlyStopping(monitor="val_loss", patience=5, mode="min")
+EARLY_STOPPER_PATIENCE = 7
+early_stopper = EarlyStopping(monitor="val_loss", patience=EARLY_STOPPER_PATIENCE, mode="min")
 
 
 class ModelName(Enum):
