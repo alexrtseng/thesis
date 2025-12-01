@@ -107,7 +107,7 @@ def plot_opt_vs_perf_samples(
     combined_df = opt_results[0]
     forecast_charge_col = "charge_mw_6"
     forecast_discharge_col = "discharge_mw_6"
-    price_col = "lmp_24"  # super scuffed but this is actual price
+    price_col = "lmp"  # super scuffed but this is actual price
 
     # Build net series
     combined_df["net_perf_mw"] = (

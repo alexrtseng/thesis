@@ -1,9 +1,12 @@
+from pathlib import Path
 from typing import Dict
 
 import gurobipy as gp
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from darts import TimeSeries
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - needed for 3D projection
 
 from deterministic.single_market_battery import (
     DEFAULT_BATTERY,
@@ -107,7 +110,7 @@ def short_horizon_pred_performance(
     )
     if granular_metrics:
         for_24_decisions = _short_horizon_pred_performance(preds, df, 24)[
-            ["charge_mw", "discharge_mw", "lmp"]
+            ["charge_mw", "discharge_mw"]
         ]
     for_12_decisions = _short_horizon_pred_performance(preds, df, 12)[
         ["charge_mw", "discharge_mw"]
@@ -117,7 +120,7 @@ def short_horizon_pred_performance(
             ["charge_mw", "discharge_mw"]
         ]
     for_6_decisions = _short_horizon_pred_performance(preds, df, 6)[
-        ["charge_mw", "discharge_mw"]
+        ["charge_mw", "discharge_mw", "lmp"]
     ]
     for_3_decisions = _short_horizon_pred_performance(preds, df, 3)[
         ["charge_mw", "discharge_mw"]
@@ -136,22 +139,23 @@ def short_horizon_pred_performance(
 
     # include granular horizons only when requested
     if granular_metrics:
-        # keep 24 close to perf so lmp_24 is available for perf calculation
-        frames.insert(1, for_24_decisions.add_suffix("_24"))
+        frames.append(for_24_decisions.add_suffix("_24"))
         frames.append(for_9_decisions.add_suffix("_9"))
         frames.append(for_1_decisions.add_suffix("_1"))
 
     combined_decisions = pd.concat(frames, axis=1, join="outer")
+    combined_decisions.rename(columns={"lmp_6": "lmp"}, inplace=True)
     combined_decisions = combined_decisions.sort_index()
     combined_decisions = combined_decisions.dropna(how="any")
     perf_val = np.sum(
         (combined_decisions["charge_mw_perf"] - combined_decisions["discharge_mw_perf"])
         * 5.0
         / 60.0
-        * combined_decisions["lmp_24"]
+        * combined_decisions["lmp"]
     )
     vals = {}
-    for i, horizon in enumerate([1, 3, 6, 9, 12, 24]):
+    horizon_list = [1, 3, 6, 9, 12, 24] if granular_metrics else [3, 6, 12]
+    for i, horizon in enumerate(horizon_list):
         vals[f"pct_perf_hor_{horizon}"] = (
             np.sum(
                 (
@@ -160,7 +164,7 @@ def short_horizon_pred_performance(
                 )
                 * 5.0
                 / 60.0
-                * combined_decisions["lmp_24"]
+                * combined_decisions["lmp"]
             )
             / perf_val
         )
@@ -197,3 +201,166 @@ def calculate_metrics(pred_df: pd.DataFrame) -> Dict[str, float]:
     results["val_rmse_full"] = rmse_total
 
     return results
+
+
+def calculate_residual_matrix(pred_df: pd.DataFrame):
+    if "actual" not in pred_df.columns:
+        raise ValueError("pred_df must contain an 'actual' column")
+    # Residual bins: width 10 from -1000 to 950 -> 195 bins
+    bin_start = -200
+    bin_end = 1000
+    bin_width = 4
+    # Build bin edges inclusive of end
+    bins = np.arange(bin_start, bin_end + bin_width, bin_width, dtype=float)
+    # Prepare output matrix: 24 horizons x 300 bins
+    num_horizons = 24
+    num_bins = int((bin_end - bin_start) / bin_width)
+    if len(bins) - 1 != num_bins:
+        # Safety check to ensure 100 bins
+        num_bins = len(bins) - 1
+
+    matrix = np.zeros((num_horizons, num_bins), dtype=int)
+
+    actual = pred_df["actual"].to_numpy(dtype=float)
+
+    for h in range(1, num_horizons + 1):
+        col = f"h_{h}"
+        if col not in pred_df.columns:
+            # Leave row as zeros if horizon column missing
+            continue
+        preds_h = pred_df[col].to_numpy(dtype=float)
+        # Build residuals where both actual & prediction are present
+        mask = ~np.isnan(actual) & ~np.isnan(preds_h)
+        if not np.any(mask):
+            continue
+        residuals = preds_h[mask] - actual[mask]
+
+        # Histogram count per bin using pandas cut for consistent binning
+        # Values outside range are dropped (do not contribute to any bin)
+        cats = pd.cut(residuals, bins=bins, right=False, include_lowest=True)
+        counts = pd.Series(cats).value_counts(sort=False)
+        # Align to expected number of bins
+        counts = counts.reindex(
+            pd.IntervalIndex.from_breaks(bins, closed="left"), fill_value=0
+        )
+        matrix[h - 1, :] = counts.to_numpy(dtype=int)
+
+    # Return as DataFrame for readability: rows=horizons, cols=bin labels
+    bin_labels = [f"[{int(bins[i])},{int(bins[i + 1])})" for i in range(len(bins) - 1)]
+    horizon_labels = [f"h_{h}" for h in range(1, num_horizons + 1)]
+    return pd.DataFrame(matrix, index=horizon_labels, columns=bin_labels)
+
+
+def plot_residuals_and_save(pred_df: pd.DataFrame, output_dir: Path) -> Path:
+    """Compute residual matrix, plot histograms for select horizons, and a 3D plot.
+
+    - Horizons plotted: 1, 3, 6, 9, 12, 24.
+    - 3D plot: horizon (1..24) x bin range x frequency.
+    - Saves PNG images and CSV of the residual matrix into `output_dir/residuals/`.
+
+    Returns the path to the created residuals directory.
+    """
+    if not isinstance(output_dir, Path):
+        output_dir = Path(output_dir)
+    residuals_dir = output_dir / "residuals"
+    residuals_dir.mkdir(parents=True, exist_ok=True)
+
+    # Compute residual matrix
+    matrix_df = calculate_residual_matrix(pred_df)
+    matrix_csv = residuals_dir / "residual_matrix.csv"
+    matrix_df.to_csv(matrix_csv)
+
+    # Determine bin centers for x-axis in 2D plots
+    # Columns are labels like "[start,end)"; parse start/end and use center
+    bin_centers = []
+    for label in matrix_df.columns:
+        # label format: [a,b)
+        a, b = label.strip()[1:-1].split(",")
+        a = float(a)
+        b = float(b[:-1]) if b.endswith(")") else float(b)
+        bin_centers.append((a + b) / 2.0)
+    bin_centers = np.array(bin_centers)
+
+    # Determine central 95% range across all horizons (aggregate distribution) for consistent cropping
+    total_counts = matrix_df.sum(axis=0).to_numpy(dtype=int)
+    grand_total = total_counts.sum()
+    if grand_total > 0:
+        cum_counts = np.cumsum(total_counts)
+        lower_cut = 0.025 * grand_total
+        upper_cut = 0.975 * grand_total
+        # Find first bin index where cumulative >= lower_cut
+        lower_idx = int(np.searchsorted(cum_counts, lower_cut, side="left"))
+        upper_idx = int(np.searchsorted(cum_counts, upper_cut, side="right")) - 1
+        # Safety bounds
+        lower_idx = max(lower_idx, 0)
+        upper_idx = min(upper_idx, len(total_counts) - 1)
+    else:
+        lower_idx, upper_idx = 0, len(total_counts) - 1
+
+    cropped_bin_centers = bin_centers[lower_idx : upper_idx + 1]
+    cropped_columns = matrix_df.columns[lower_idx : upper_idx + 1]
+
+    # Plot residual histograms for selected horizons (cropped to central 95%)
+    horizons_to_plot = [1, 3, 6, 9, 12, 24]
+    fig, axes = plt.subplots(
+        len(horizons_to_plot), 1, figsize=(10, 2.4 * len(horizons_to_plot)), sharex=True
+    )
+    for ax, h in zip(axes, horizons_to_plot):
+        row = matrix_df.loc[f"h_{h}"][cropped_columns]
+        ax.bar(
+            cropped_bin_centers,
+            row.to_numpy(dtype=int),
+            width=(cropped_bin_centers[1] - cropped_bin_centers[0]) * 0.9
+            if len(cropped_bin_centers) > 1
+            else 1.0,
+            align="center",
+            color="#4e79a7",
+        )
+        ax.set_title(f"Residuals Histogram — Horizon h_{h} (Central 95%)")
+        ax.set_ylabel("freq")
+    axes[-1].set_xlabel("residual (bin center)")
+    # Annotate range in the top subplot
+    axes[0].text(
+        0.01,
+        0.95,
+        f"Central 95% range: {cropped_columns[0]} .. {cropped_columns[-1]}",
+        transform=axes[0].transAxes,
+        fontsize=9,
+        va="top",
+        ha="left",
+        color="#333",
+    )
+    fig.tight_layout()
+    hist_png = residuals_dir / "residual_histograms_selected_central95.png"
+    fig.savefig(hist_png, dpi=150)
+    plt.close(fig)
+
+    # 3D plot: horizon vs cropped bin index vs frequency (central 95%)
+    H = matrix_df.shape[0]
+    Bc = len(cropped_columns)
+    X_bins = np.arange(Bc)  # cropped bin index
+    Y_horizons = np.arange(1, H + 1)  # 1..24
+    X, Y = np.meshgrid(X_bins, Y_horizons)
+    Z = matrix_df[cropped_columns].to_numpy(dtype=int)
+
+    fig3d = plt.figure(figsize=(12, 7))
+    ax3d = fig3d.add_subplot(111, projection="3d")
+    # Use bar3d for clarity; each bar at (bin,horizon) with height frequency
+    dx = 0.8
+    dy = 0.8
+    # Flatten grids for bar3d
+    xs = X.ravel()
+    ys = Y.ravel()
+    zs = np.zeros_like(xs, dtype=float)
+    hs = Z.ravel().astype(float)
+    ax3d.bar3d(xs, ys, zs, dx, dy, hs, shade=True, color="#f28e2b")
+    ax3d.set_xlabel("Bin")
+    ax3d.set_ylabel("Horizon")
+    ax3d.set_zlabel("Freq")
+    ax3d.set_title("Residuals Over Horizons")
+    fig3d.tight_layout()
+    plot3d_png = residuals_dir / "residuals_3d.png"
+    fig3d.savefig(plot3d_png, dpi=150)
+    plt.close(fig3d)
+
+    return residuals_dir

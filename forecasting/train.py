@@ -23,13 +23,13 @@ from darts.models.forecasting.xgboost import XGBModel
 import wandb
 from data.data_output_functions import read_rt_da_with_weather
 from forecasting.graphing import plot_opt_vs_perf_samples
-from forecasting.metrics import calculate_metrics, short_horizon_pred_performance
+from forecasting.metrics import calculate_metrics, calculate_residual_matrix, plot_residuals_and_save, short_horizon_pred_performance
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.transforms import name_to_transformer
 
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
 WANDB_PROJECT_NAME = os.environ.get("WANDB_PROJECT_NAME", "Thesis")
-PREDICT_ROLLING_WINDOW_SIZE = 10000
+PREDICT_ROLLING_WINDOW_SIZE = 5000
 GRANULAR_OPT_METRICS = os.environ.get("GRANULAR_OPT_METRICS", "0") == "1"
 
 FEATURE_COLUMNS = [
@@ -168,7 +168,7 @@ def _post_run_logging(
     t0 = time.perf_counter()
     metrics = calculate_metrics(preds_df)
     print(f"Calculating metrics took {time.perf_counter() - t0:.3f}s")
-
+    
     print("Running opt metrics")
     t0 = time.perf_counter()
     opt_results = short_horizon_pred_performance(preds, preds_df, GRANULAR_OPT_METRICS)
@@ -205,6 +205,11 @@ def _post_run_logging(
     with open(metrics_path, "w") as f:
         json.dump(metrics, f, indent=2)
     print(f"Model saving and graph generation took {time.perf_counter() - t0:.3f}s")
+
+    t0 = time.perf_counter()
+    plot_residuals_and_save(preds_df, save_dir)
+    print(f"Residual plotting took {time.perf_counter() - t0:.3f}s")
+
 
     # --- Log all metrics to W&B ---
     # Flatten already-flat dict; add a prefix for organization
@@ -466,7 +471,7 @@ def train_hf_model(
                 week_start=week_start,
                 show_graphs=show_graphs,
             )
-
+        
         return preds, actual_val
 
 
@@ -513,10 +518,10 @@ def test_fut_cov_train():
 def test_post_run_logging():
     for model_name in [
         # ModelName.AUTO_ARIMA,
-        # ModelName.RNNMODEL,
+        ModelName.RNNMODEL,
         # ModelName.TCNMODEL,
         # ModelName.NLINEARMODEL,
-        ModelName.XGBMODEL,
+        # ModelName.XGBMODEL,
     ]:
         print(f"Testing model: {model_name}")
         feature_df = build_series_for_node(2156113094)
@@ -537,5 +542,5 @@ def test_post_run_logging():
 
 
 if __name__ == "__main__":
-    test_fut_cov_train()
-    # test_post_run_logging()
+    # test_fut_cov_train()
+    test_post_run_logging()
