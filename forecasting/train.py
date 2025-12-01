@@ -29,6 +29,7 @@ from forecasting.transforms import name_to_transformer
 
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
 WANDB_PROJECT_NAME = os.environ.get("WANDB_PROJECT_NAME", "Thesis")
+PREDICT_ROLLING_WINDOW_SIZE = 10000
 
 FEATURE_COLUMNS = [
     # "lmp_rt", this is the target
@@ -309,29 +310,59 @@ def train_hf_model(
             pass
 
         t0 = time.perf_counter()
+        # include naive rolling window
+        raw_preds: list[TimeSeries]
         if isinstance(model, PastCovariatesTorchModel):
-            if config.get("include_delayed_covariates", False):
-                raw_preds = model.predict(
-                    n=24,
-                    series=[
-                        val_y_s[:i]
-                        for i in range(model.input_chunk_length, len(val_y_s) - 24)
-                    ],
-                    past_covariates=[
-                        val_train_s[: i + 24 - model.output_chunk_length]
-                        for i in range(model.input_chunk_length, len(val_train_s) - 24)
-                    ],
-                    n_jobs=-1,
-                )
-            else:
-                raw_preds = model.predict(
-                    n=24,
-                    series=[
-                        val_y_s[:i]
-                        for i in range(model.input_chunk_length, len(val_y_s) - 24)
-                    ],
-                    n_jobs=-1,
-                )
+            raw_preds = []
+            for i in range(
+                model.input_chunk_length,
+                len(val_y_s) - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                if config.get("include_delayed_covariates", False):
+                    raw_preds.extend(
+                        model.predict(
+                            n=24,
+                            series=[
+                                val_y_s[:j]
+                                for j in range(
+                                    i,
+                                    min(
+                                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                                        len(val_y_s) - 24,
+                                    ),
+                                )
+                            ],
+                            past_covariates=[
+                                val_train_s[: j + 24 - model.output_chunk_length]
+                                for j in range(
+                                    i,
+                                    min(
+                                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                                        len(val_train_s) - 24,
+                                    ),
+                                )
+                            ],
+                            n_jobs=1,
+                        )
+                    )
+                else:
+                    raw_preds.extend(
+                        model.predict(
+                            n=24,
+                            series=[
+                                val_y_s[:j]
+                                for j in range(
+                                    i,
+                                    min(
+                                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                                        len(val_y_s) - 24,
+                                    ),
+                                )
+                            ],
+                            n_jobs=1,
+                        )
+                    )
         elif isinstance(
             model,
             (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
@@ -345,31 +376,67 @@ def train_hf_model(
                     )
                 )
         elif isinstance(model, TorchForecastingModel):
-            raw_preds = model.predict(
-                n=24,
-                series=[
-                    val_y_s[:i]
-                    for i in range(model.input_chunk_length, len(val_y_s) - 24)
-                ],
-                future_covariates=[
-                    val_fut_s[: i + 24]
-                    for i in range(model.input_chunk_length, len(val_fut_s) - 24)
-                ],
-                n_jobs=-1,
-            )
+            raw_preds = []
+            for i in range(
+                model.input_chunk_length,
+                len(val_y_s) - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            val_y_s[:j]
+                            for j in range(
+                                i,
+                                min(i + PREDICT_ROLLING_WINDOW_SIZE, len(val_y_s) - 24),
+                            )
+                        ],
+                        future_covariates=[
+                            val_fut_s[: j + 24]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE, len(val_fut_s) - 24
+                                ),
+                            )
+                        ],
+                        n_jobs=1,
+                    )
+                )
         elif isinstance(model, XGBModel):
+            raw_preds = []
             lags = config.get("lags", 24)
             if not isinstance(lags, int):
                 lags = max(lags)
             lags_future_covariates_p = config.get("lags_future_covariates_p", 12)
             lag = max(lags, lags_future_covariates_p)
-            raw_preds = model.predict(
-                n=24,
-                series=[val_y_s[:i] for i in range(lag, len(val_y_s) - 24)],
-                future_covariates=[
-                    val_fut_s[: i + 24] for i in range(lag, len(val_fut_s) - 24)
-                ],
-            )
+            for i in range(
+                lag,
+                len(val_y_s) - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            val_y_s[:j]
+                            for j in range(
+                                i,
+                                min(i + PREDICT_ROLLING_WINDOW_SIZE, len(val_y_s) - 24),
+                            )
+                        ],
+                        future_covariates=[
+                            val_fut_s[: j + 24]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE, len(val_fut_s) - 24
+                                ),
+                            )
+                        ],
+                    )
+                )
         else:
             raise ValueError(f"Unsupported model type: {type(model)}")
         time_taken = time.perf_counter() - t0
@@ -404,11 +471,11 @@ def train_hf_model(
 
 def test_fut_cov_train():
     for model_name in [
-        # ModelName.DLINEARMODEL,
+        ModelName.RNNMODEL,
         # ModelName.NLINEARMODEL,
         # ModelName.TIDEMODEL,
         # ModelName.TSMIXERMODEL,
-        ModelName.XGBMODEL,
+        # ModelName.XGBMODEL,
     ]:
         print(f"Testing model: {model_name}")
         feature_df = build_series_for_node(2156113094)
@@ -469,5 +536,5 @@ def test_post_run_logging():
 
 
 if __name__ == "__main__":
-    # test_fut_cov_train()
-    test_post_run_logging()
+    test_fut_cov_train()
+    # test_post_run_logging()
