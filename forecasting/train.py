@@ -244,7 +244,7 @@ def train_hf_model(
         project=WANDB_PROJECT_NAME,
         config=config,
         name=run_name,
-        settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off")
+        settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off"),
     ):
         reg = make_registry()
         spec = reg[model_name]
@@ -445,9 +445,9 @@ def test_fut_cov_train():
 def test_post_run_logging():
     for model_name in [
         # ModelName.AUTO_ARIMA,
-        #ModelName.RNNMODEL,
-        #ModelName.TCNMODEL,
-        #ModelName.NLINEARMODEL,
+        # ModelName.RNNMODEL,
+        # ModelName.TCNMODEL,
+        # ModelName.NLINEARMODEL,
         ModelName.XGBMODEL,
     ]:
         print(f"Testing model: {model_name}")

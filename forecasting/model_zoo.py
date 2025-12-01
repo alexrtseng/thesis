@@ -398,7 +398,7 @@ def _torch_kwargs(model_cls, config: Dict[str, Any]) -> Dict[str, Any]:
         "n_epochs": int(
             config.get("n_epochs", 100)
         ),  # should have an early stopper; override available
-        "batch_size": int(config.get("batch_size", 64)),
+        "batch_size": int(config.get("batch_size", 128)),
         "pl_trainer_kwargs": trainer_kwargs,
         "add_encoders": encoder,
         "save_checkpoints": False,
