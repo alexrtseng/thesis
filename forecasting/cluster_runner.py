@@ -154,7 +154,7 @@ def run_parallel(
             gpu_id = None
             if available_gpus:
                 gpu_id = available_gpus[len(active) % len(available_gpus)]
-            delay = random.uniform(0.5, 2.5)  # stagger start
+            delay = random.uniform(10, 20)  # stagger start
             p = Process(
                 target=_worker,
                 args=(
@@ -330,7 +330,7 @@ def main():
     # else:
     run_parallel(
         pnode_id=pnode_id,
-        project="Thesis",
+        project="thesis-hf-forecasters",
         models=model_list,
         runs_per_model=args.runs_per_model,
         max_processes=args.max_proc,

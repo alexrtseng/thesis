@@ -8,7 +8,7 @@ def wandb_logger():
 
     class WandbLogger(Callback):
         def __init__(self, metrics_to_log=None):
-            self.metrics_to_log = metrics_to_log or ["train_loss", "val_loss"]
+            self.metrics_to_log = None
 
         def on_train_start(self, trainer, pl_module):
             wandb.watch(pl_module)

@@ -23,12 +23,16 @@ from darts.models.forecasting.xgboost import XGBModel
 import wandb
 from data.data_output_functions import read_rt_da_with_weather
 from forecasting.graphing import plot_opt_vs_perf_samples
-from forecasting.metrics import calculate_metrics, calculate_residual_matrix, plot_residuals_and_save, short_horizon_pred_performance
+from forecasting.metrics import (
+    calculate_metrics,
+    plot_residuals_and_save,
+    short_horizon_pred_performance,
+)
 from forecasting.model_zoo import ModelName, make_registry
 from forecasting.transforms import name_to_transformer
 
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
-WANDB_PROJECT_NAME = os.environ.get("WANDB_PROJECT_NAME", "Thesis")
+WANDB_PROJECT_NAME_HF_ARB = "thesis-hf-forecasters"
 PREDICT_ROLLING_WINDOW_SIZE = 5000
 GRANULAR_OPT_METRICS = os.environ.get("GRANULAR_OPT_METRICS", "0") == "1"
 
@@ -155,6 +159,7 @@ def _post_run_logging(
     day_start: pd.Timestamp = None,
     week_start: pd.Timestamp = None,
     show_graphs: bool = False,
+    omitted_test_size: int = 0,
 ):
     print("Getting preds df")
     t0 = time.perf_counter()
@@ -168,7 +173,7 @@ def _post_run_logging(
     t0 = time.perf_counter()
     metrics = calculate_metrics(preds_df)
     print(f"Calculating metrics took {time.perf_counter() - t0:.3f}s")
-    
+
     print("Running opt metrics")
     t0 = time.perf_counter()
     opt_results = short_horizon_pred_performance(preds, preds_df, GRANULAR_OPT_METRICS)
@@ -210,7 +215,6 @@ def _post_run_logging(
     plot_residuals_and_save(preds_df, save_dir)
     print(f"Residual plotting took {time.perf_counter() - t0:.3f}s")
 
-
     # --- Log all metrics to W&B ---
     # Flatten already-flat dict; add a prefix for organization
     t0 = time.perf_counter()
@@ -219,6 +223,7 @@ def _post_run_logging(
     wandb.summary["subset_data_size"] = subset_data_size
     wandb.summary["model_class"] = model.__class__.__name__
     wandb.summary["save_dir"] = str(save_dir)
+    wandb.summary["omitted_test_size"] = omitted_test_size
     wandb.finish()
     print(f"W&B logging took {time.perf_counter() - t0:.3f}s")
 
@@ -233,6 +238,7 @@ def train_hf_model(
     subset_data_size: float,
     verbose: bool = False,
     post_run_logging: bool = False,
+    omitted_test_size: int = 0,
     day_start: pd.Timestamp = None,
     week_start: pd.Timestamp = None,
     show_graphs: bool = False,
@@ -248,11 +254,12 @@ def train_hf_model(
     """
     run_name = f"{model_name.value}-{pnode_id}-{wandb.util.generate_id()}"
     with wandb.init(
-        project=WANDB_PROJECT_NAME,
+        project=WANDB_PROJECT_NAME_HF_ARB,
         config=config,
         name=run_name,
         settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off"),
     ):
+        config = wandb.config
         reg = make_registry()
         spec = reg[model_name]
         model = spec.builder(config)
@@ -326,28 +333,22 @@ def train_hf_model(
                 PREDICT_ROLLING_WINDOW_SIZE,
             ):
                 if config.get("include_delayed_covariates", False):
+                    j_stop = min(
+                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                        len(val_y_s) - 24,
+                    )
                     raw_preds.extend(
                         model.predict(
                             n=24,
                             series=[
-                                val_y_s[:j]
-                                for j in range(
-                                    i,
-                                    min(
-                                        i + PREDICT_ROLLING_WINDOW_SIZE,
-                                        len(val_y_s) - 24,
-                                    ),
-                                )
+                                val_y_s[j - model.input_chunk_length : j]
+                                for j in range(i, j_stop)
                             ],
                             past_covariates=[
-                                val_train_s[: j + 24 - model.output_chunk_length]
-                                for j in range(
-                                    i,
-                                    min(
-                                        i + PREDICT_ROLLING_WINDOW_SIZE,
-                                        len(val_train_s) - 24,
-                                    ),
-                                )
+                                val_train_s[
+                                    j - model.input_chunk_length : j + 24
+                                ]
+                                for j in range(i, j_stop)
                             ],
                             n_jobs=1,
                         )
@@ -357,7 +358,7 @@ def train_hf_model(
                         model.predict(
                             n=24,
                             series=[
-                                val_y_s[:j]
+                                val_y_s[j - model.input_chunk_length : j]
                                 for j in range(
                                     i,
                                     min(
@@ -392,14 +393,14 @@ def train_hf_model(
                     model.predict(
                         n=24,
                         series=[
-                            val_y_s[:j]
+                            val_y_s[j - model.input_chunk_length : j]
                             for j in range(
                                 i,
                                 min(i + PREDICT_ROLLING_WINDOW_SIZE, len(val_y_s) - 24),
                             )
                         ],
                         future_covariates=[
-                            val_fut_s[: j + 24]
+                            val_fut_s[j - model.input_chunk_length : j + 24]
                             for j in range(
                                 i,
                                 min(
@@ -413,12 +414,22 @@ def train_hf_model(
         elif isinstance(model, XGBModel):
             raw_preds = []
             lags = config.get("lags", 24)
-            if not isinstance(lags, int):
-                lags = max(lags)
+            # Determine required target history length from lags (support int or list of negative offsets)
+            if isinstance(lags, int):
+                required_target_history = int(lags)
+            else:
+                required_target_history = -min(lags)
+
             lags_future_covariates_p = config.get("lags_future_covariates_p", 12)
-            lag = max(lags, lags_future_covariates_p)
+            lags_future_covariates_f = config.get("lags_future_covariates_f", 0)
+            if isinstance(lags_future_covariates_p, int):
+                required_past_cov_history = int(lags_future_covariates_p)
+            else:
+                required_past_cov_history = -min(lags_future_covariates_p)
+
+            window = max(required_target_history, required_past_cov_history)
             for i in range(
-                lag,
+                window,
                 len(val_y_s) - 24,
                 PREDICT_ROLLING_WINDOW_SIZE,
             ):
@@ -426,18 +437,22 @@ def train_hf_model(
                     model.predict(
                         n=24,
                         series=[
-                            val_y_s[:j]
-                            for j in range(
-                                i,
-                                min(i + PREDICT_ROLLING_WINDOW_SIZE, len(val_y_s) - 24),
-                            )
-                        ],
-                        future_covariates=[
-                            val_fut_s[: j + 24]
+                            val_y_s[j - window : j]
                             for j in range(
                                 i,
                                 min(
-                                    i + PREDICT_ROLLING_WINDOW_SIZE, len(val_fut_s) - 24
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    len(val_fut_s) - 24 - lags_future_covariates_f,
+                                ),
+                            )
+                        ],
+                        future_covariates=[
+                            val_fut_s[j - window : j + 24 + lags_future_covariates_f]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    len(val_fut_s) - 24 - lags_future_covariates_f,
                                 ),
                             )
                         ],
@@ -470,23 +485,29 @@ def train_hf_model(
                 day_start=day_start,
                 week_start=week_start,
                 show_graphs=show_graphs,
+                omitted_test_size=omitted_test_size,
             )
-        
+
         return preds, actual_val
 
 
 def test_fut_cov_train():
     for model_name in [
-        ModelName.RNNMODEL,
+        # ModelName.RNNMODEL,
         # ModelName.NLINEARMODEL,
         # ModelName.TIDEMODEL,
         # ModelName.TSMIXERMODEL,
-        # ModelName.XGBMODEL,
+        ModelName.XGBMODEL,
     ]:
         print(f"Testing model: {model_name}")
         feature_df = build_series_for_node(2156113094)
         feature_df = feature_df[-10000:]  # smaller data for test speed
-        config = {"target_transform": "Clip", "n_epochs": 1, "model": "GRU"}
+        config = {
+            "target_transform": "Clip",
+            "n_epochs": 1,
+            "model": "LSTM",
+            "input_chunk_length": 50,
+        }
         preds, actual_val = train_hf_model(
             feature_df,
             model_name,
@@ -505,7 +526,7 @@ def test_fut_cov_train():
 
         print("Calculating metrics")
         t0 = time.perf_counter()
-        metrics = calculate_metrics(preds_df)
+        _ = calculate_metrics(preds_df)
         print(f"Calculating metrics took {time.perf_counter() - t0:.3f}s")
 
         print("Running opt metrics")
@@ -518,7 +539,7 @@ def test_fut_cov_train():
 def test_post_run_logging():
     for model_name in [
         # ModelName.AUTO_ARIMA,
-        ModelName.RNNMODEL,
+        # ModelName.RNNMODEL,
         # ModelName.TCNMODEL,
         # ModelName.NLINEARMODEL,
         # ModelName.XGBMODEL,
@@ -542,5 +563,5 @@ def test_post_run_logging():
 
 
 if __name__ == "__main__":
-    # test_fut_cov_train()
-    test_post_run_logging()
+    test_fut_cov_train()
+    # test_post_run_logging()

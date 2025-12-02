@@ -34,7 +34,7 @@ from pytorch_lightning.callbacks import EarlyStopping
 from forecasting.wandb_callback import wandb_logger
 
 # Configure float32/TF32 precision using new APIs when available
-EARLY_STOPPER_PATIENCE = 7
+EARLY_STOPPER_PATIENCE = 5
 early_stopper = EarlyStopping(monitor="val_loss", patience=EARLY_STOPPER_PATIENCE, mode="min")
 
 
@@ -104,7 +104,7 @@ class ModelSpec:
                 # Retain modest space; XGB benefits from a couple knobs
                 params = {
                     "lags": {
-                        "values": [0, 1, 24, 72, [-1, -2, -4, -12, -24, -72, -168]]
+                        "values": [1, 24, 72, [-1, -2, -4, -12, -24, -72, -168]]
                     },
                     # Use proper W&B distribution syntax (not nested under values)
                     "lags_future_covariates_p": {
@@ -137,10 +137,9 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 72,
-                    "max": 192,
+                    "min": 24,
+                    "max": 240,
                 },
-                "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "hidden_dim": {"distribution": "int_uniform", "min": 32, "max": 256},
                 "n_rnn_layers": {"distribution": "int_uniform", "min": 1, "max": 3},
                 "dropout": {"distribution": "uniform", "min": 0.0, "max": 0.3},
@@ -151,8 +150,8 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 72,
-                    "max": 192,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "hidden_dim": {"distribution": "int_uniform", "min": 32, "max": 256},
@@ -165,8 +164,8 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 96,
-                    "max": 168,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "include_delayed_covariates": {"values": [False, True]},
@@ -177,8 +176,8 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 96,
-                    "max": 168,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "include_delayed_covariates": {"values": [False, True]},
@@ -189,8 +188,8 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 72,
-                    "max": 192,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "kernel_size": {"values": [3, 5]},
@@ -205,12 +204,12 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 96,
-                    "max": 168,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
-                "d_model": {"distribution": "int_uniform", "min": 64, "max": 256},
-                "nhead": {"distribution": "int_uniform", "min": 2, "max": 8},
+                "d_model": {"values": [64, 128, 256]},
+                "nhead": {"values": [2, 4, 8]},
                 "num_encoder_layers": {
                     "distribution": "int_uniform",
                     "min": 2,
@@ -229,8 +228,8 @@ class ModelSpec:
             params = {
                 "input_chunk_length": {
                     "distribution": "int_uniform",
-                    "min": 72,
-                    "max": 168,
+                    "min": 24,
+                    "max": 240,
                 },
                 "output_chunk_length": {"values": [1, 3, 6, 12, 24]},
                 "hidden_size": {"distribution": "int_uniform", "min": 32, "max": 128},
@@ -363,14 +362,12 @@ def _torch_kwargs(model_cls, config: Dict[str, Any]) -> Dict[str, Any]:
                 "future": ["minute", "hour", "dayofweek", "month"]
                 if model_cls != PastCovariatesTorchModel
                 else [],
-                "transformer": Scaler(),
             },
             "cyclic": {
                 "past": ["minute", "hour", "dayofweek", "month"],
                 "future": ["minute", "hour", "dayofweek", "month"]
                 if model_cls != PastCovariatesTorchModel
                 else [],
-                "transformer": Scaler(),
             },
         }
     if time_features == "cyclical":
@@ -380,7 +377,6 @@ def _torch_kwargs(model_cls, config: Dict[str, Any]) -> Dict[str, Any]:
                 "future": ["minute", "hour", "dayofweek", "month"]
                 if model_cls != PastCovariatesTorchModel
                 else [],
-                "transformer": Scaler(),
             }
         }
     if time_features == "attributes":
@@ -390,7 +386,6 @@ def _torch_kwargs(model_cls, config: Dict[str, Any]) -> Dict[str, Any]:
                 "future": ["minute", "hour", "dayofweek", "month"]
                 if model_cls != PastCovariatesTorchModel
                 else [],
-                "transformer": Scaler(),
             }
         }
 
@@ -479,7 +474,6 @@ def make_registry() -> Dict[ModelName, ModelSpec]:
         builder=lambda cfg: RNNModel(
             model=cfg.get("model", "LSTM"),
             input_chunk_length=int(cfg.get("input_chunk_length", 60)),
-            output_chunk_length=int(cfg.get("output_chunk_length", 24)),
             training_length=int(cfg.get("input_chunk_length", 60))
             + int(cfg.get("output_chunk_length", 20)),
             hidden_dim=int(cfg.get("hidden_dim", 64)),
