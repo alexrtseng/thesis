@@ -49,6 +49,7 @@ def run_sweep_for_node(
             config=config,
             post_run_logging=True,
             omitted_test_size=test_size,
+            verbose=True,
         )
 
     wandb.agent(sweep_id, function=_fn, project=project, count=count)
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     feature_df = build_series_for_node(2156113094)
 
     run_sweep_for_node(
-        model_name=ModelName.TRANSFORMERMODEL,
+        model_name=ModelName.XGBMODEL,
         pnode_id=2156113094,
         feature_df=feature_df,
         project=WANDB_PROJECT_NAME_HF_ARB,

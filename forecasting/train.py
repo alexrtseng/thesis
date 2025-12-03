@@ -258,6 +258,7 @@ def train_hf_model(
         config=config,
         name=run_name,
         settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off"),
+        mode="offline"
     ):
         config = wandb.config
         reg = make_registry()
@@ -489,6 +490,8 @@ def train_hf_model(
             )
 
         return preds, actual_val
+    
+    
 
 
 def test_fut_cov_train():
