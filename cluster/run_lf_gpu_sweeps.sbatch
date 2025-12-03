@@ -56,4 +56,5 @@ srun -u "$PYBIN" -m forecasting.cluster_runner \
   --runs-per-model "$RUNS_PER_MODEL" \
   --max-proc "$MAX_PROC" \
   --subset-data-size "$SUBSET" \
-  --use-gpus
+  --use-gpus \
+  --lf

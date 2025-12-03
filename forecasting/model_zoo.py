@@ -6,7 +6,6 @@ from enum import Enum
 from typing import Any, Callable, Dict
 
 import torch
-from darts.dataprocessing.transformers import Scaler
 from darts.models import (
     AutoARIMA,
     AutoETS,
@@ -35,7 +34,9 @@ from forecasting.wandb_callback import wandb_logger
 
 # Configure float32/TF32 precision using new APIs when available
 EARLY_STOPPER_PATIENCE = 5
-early_stopper = EarlyStopping(monitor="val_loss", patience=EARLY_STOPPER_PATIENCE, mode="min")
+early_stopper = EarlyStopping(
+    monitor="val_loss", patience=EARLY_STOPPER_PATIENCE, mode="min"
+)
 
 
 class ModelName(Enum):
@@ -103,9 +104,7 @@ class ModelSpec:
             elif name == "xgbmodel":
                 # Retain modest space; XGB benefits from a couple knobs
                 params = {
-                    "lags": {
-                        "values": [1, 24, 72, [-1, -2, -4, -12, -24, -72, -168]]
-                    },
+                    "lags": {"values": [1, 24, 72, [-1, -2, -4, -12, -24, -72, -168]]},
                     # Use proper W&B distribution syntax (not nested under values)
                     "lags_future_covariates_p": {
                         "distribution": "int_uniform",

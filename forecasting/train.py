@@ -25,6 +25,7 @@ from data.data_output_functions import read_rt_da_with_weather
 from forecasting.graphing import plot_opt_vs_perf_samples
 from forecasting.metrics import (
     calculate_metrics,
+    long_horizon_pred_performance,
     plot_residuals_and_save,
     short_horizon_pred_performance,
 )
@@ -33,6 +34,7 @@ from forecasting.transforms import name_to_transformer
 
 WANDB_API_KEY = os.environ.get("WANDB_API_KEY")
 WANDB_PROJECT_NAME_HF_ARB = "thesis-hf-forecasters"
+WANDB_PROJECT_NAME_LF_ARB = "thesis-lf-forecasters"
 PREDICT_ROLLING_WINDOW_SIZE = 5000
 GRANULAR_OPT_METRICS = os.environ.get("GRANULAR_OPT_METRICS", "0") == "1"
 
@@ -119,6 +121,44 @@ def _prep_data(transformer_cls, feature_df: pd.DataFrame):
     return train_y, val_y, train_fut, val_fut
 
 
+def _prep_data_lf(
+    transformer_cls, feature_df: pd.DataFrame, hourly_feature_dfs: list[pd.DataFrame]
+):
+    _hourly_feature_dfs = [df.copy() for df in hourly_feature_dfs]
+    for i in range(len(_hourly_feature_dfs)):
+        _hourly_feature_dfs[i]["lmp_lf_avg"] = transformer_cls.transform(
+            _hourly_feature_dfs[i]["lmp_lf_avg"]
+        )
+        _hourly_feature_dfs[i]["lmp_da"] = transformer_cls.transform(
+            _hourly_feature_dfs[i]["lmp_da"]
+        )
+
+    train_y_series = []
+    train_fut_series = []
+    val_y_series = []
+    val_fut_series = []
+    for df in _hourly_feature_dfs:
+        target_series = TimeSeries.from_dataframe(
+            df,
+            time_col=None,
+            value_cols="lmp_lf_avg",
+            freq="5min",
+        ).astype(np.float32)
+        future_covariates = TimeSeries.from_dataframe(
+            df,
+            time_col=None,
+            value_cols=FEATURE_COLUMNS,
+            freq="5min",
+        ).astype(np.float32)
+        split_idx = int(len(target_series) * 0.8)
+        train_y_series.append(target_series[:split_idx])
+        val_y_series.append(target_series[split_idx:])
+        train_fut_series.append(future_covariates[:split_idx])
+        val_fut_series.append(future_covariates[split_idx:])
+
+    return train_y_series, val_y_series, train_fut_series, val_fut_series
+
+
 def _get_preds_df(
     actual_val: TimeSeries,
     preds: list[TimeSeries],
@@ -160,6 +200,8 @@ def _post_run_logging(
     week_start: pd.Timestamp = None,
     show_graphs: bool = False,
     omitted_test_size: int = 0,
+    lf: bool = False,
+    lmp_series: pd.Series = None,
 ):
     print("Getting preds df")
     t0 = time.perf_counter()
@@ -176,7 +218,13 @@ def _post_run_logging(
 
     print("Running opt metrics")
     t0 = time.perf_counter()
-    opt_results = short_horizon_pred_performance(preds, preds_df, GRANULAR_OPT_METRICS)
+    if lf:
+        assert lmp_series is not None
+        opt_results = long_horizon_pred_performance(preds, lmp_series)
+    else:
+        opt_results = short_horizon_pred_performance(
+            preds, preds_df, GRANULAR_OPT_METRICS
+        )
     print(f"Running opt metrics took {time.perf_counter() - t0:.3f}s")
 
     # Save model using sweep + run name for traceability: <sweep>__<run>.pkl
@@ -185,7 +233,15 @@ def _post_run_logging(
         metrics.update({f"opt/{k}": v for k, v in opt_dict.items()})
 
     t0 = time.perf_counter()
-    out_dir = Path("forecasting/outputs") / str(pnode_id) / model.__class__.__name__
+    if lf:
+        out_dir = (
+            Path("forecasting/outputs")
+            / str(pnode_id)
+            / "lf"
+            / model.__class__.__name__
+        )
+    else:
+        out_dir = Path("forecasting/outputs") / str(pnode_id) / model.__class__.__name__
     sweep_id = getattr(wandb.run, "sweep_id", None) or "nosweep"
     run_name = wandb.run.name or wandb.run.id
 
@@ -258,7 +314,7 @@ def train_hf_model(
         config=config,
         name=run_name,
         settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off"),
-        mode="offline"
+        mode="offline",
     ):
         config = wandb.config
         reg = make_registry()
@@ -346,9 +402,7 @@ def train_hf_model(
                                 for j in range(i, j_stop)
                             ],
                             past_covariates=[
-                                val_train_s[
-                                    j - model.input_chunk_length : j + 24
-                                ]
+                                val_train_s[j - model.input_chunk_length : j + 24]
                                 for j in range(i, j_stop)
                             ],
                             n_jobs=1,
@@ -490,8 +544,280 @@ def train_hf_model(
             )
 
         return preds, actual_val
-    
-    
+
+
+def train_lf_model(
+    feature_df: pd.DataFrame,
+    hourly_feature_dfs: list[pd.DataFrame],
+    model_name: ModelName,
+    config: Dict[str, Any],
+    pnode_id: int,
+    subset_data_size: float,
+    verbose: bool = False,
+    post_run_logging: bool = False,
+    omitted_test_size: int = 0,
+    day_start: pd.Timestamp = None,
+    week_start: pd.Timestamp = None,
+    show_graphs: bool = False,
+):
+    run_name = f"{model_name.value}-{pnode_id}-lf-{wandb.util.generate_id()}"
+    with wandb.init(
+        project=WANDB_PROJECT_NAME_LF_ARB,
+        config=config,
+        name=run_name,
+        settings=wandb.Settings(code_dir=None, _disable_stats=True, console="off"),
+        mode="offline",
+    ):
+        config = wandb.config
+        config["n_epochs"] = 1  # GET RID
+        reg = make_registry()
+        spec = reg[model_name]
+        model = spec.builder(config)
+
+        tt_name = str(config.get("target_transform", "NoneTransform"))
+        transformer_cls = name_to_transformer(tt_name)
+        train_y_series, val_y_series, train_fut_series, val_fut_series = _prep_data_lf(
+            transformer_cls, feature_df, hourly_feature_dfs
+        )
+
+        # Normalize target (fit on transformed train segment only)
+
+        y_transformer = Scaler(global_fit=True)
+        train_y_s = y_transformer.fit_transform(train_y_series)
+        val_y_s = y_transformer.transform(val_y_series)
+        feat_transformer = Scaler(global_fit=True)
+        train_fut_s = feat_transformer.fit_transform(train_fut_series)
+        val_fut_s = feat_transformer.transform(val_fut_series)
+
+        if isinstance(model, PastCovariatesTorchModel):
+            if config.get("include_delayed_covariates", False):
+                delay = model.output_chunk_length + config.get(
+                    "covariate_delay_steps", 0
+                )
+                train_train_s = []
+                val_train_s = []
+                for i in range(len(train_fut_s)):
+                    train_train_s.append(train_fut_s.shift(-delay))
+                    val_train_s.append(val_fut_s.shift(-delay))
+                model.fit(
+                    series=train_y_s,
+                    past_covariates=train_train_s,
+                    val_series=val_y_s,
+                    val_past_covariates=val_train_s,
+                    verbose=verbose,
+                )
+            else:
+                model.fit(
+                    series=train_y_s,
+                    val_series=val_y_s,
+                    verbose=verbose,
+                )
+        elif isinstance(
+            model,
+            (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
+        ):
+            model.fit(
+                series=train_y_s[0],
+                verbose=verbose,
+            )
+        elif isinstance(model, (TorchForecastingModel, XGBModel)):
+            model.fit(
+                series=train_y_s,
+                future_covariates=train_fut_s,
+                val_series=val_y_s,
+                val_future_covariates=val_fut_s,
+                verbose=verbose,
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+
+        # After training: clear callbacks if they were added so saving works reliably
+        try:
+            model.trainer_params["callbacks"] = []
+            model._model_params["pl_trainer_kwargs"]["callbacks"] = []
+        except Exception:
+            pass
+
+        t0 = time.perf_counter()
+        # include naive rolling window
+        raw_preds: list[TimeSeries]
+        val_length = len(val_y_s[0])
+        print(f"Validation series length: {val_length} -> {val_length * 12}")
+        if isinstance(model, PastCovariatesTorchModel):
+            raw_preds = []
+            for i in range(
+                model.input_chunk_length,
+                val_length - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                if config.get("include_delayed_covariates", False):
+                    j_stop = min(
+                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                        val_length - 24,
+                    )
+                    raw_preds.extend(
+                        model.predict(
+                            n=24,
+                            series=[
+                                val_y_s[k][j - model.input_chunk_length : j]
+                                for j in range(i, j_stop)
+                                for k in range(len(val_y_s))
+                            ],
+                            past_covariates=[
+                                val_train_s[k][j - model.input_chunk_length : j + 24]
+                                for j in range(i, j_stop)
+                                for k in range(len(val_y_s))
+                            ],
+                            n_jobs=1,
+                        )
+                    )
+                else:
+                    raw_preds.extend(
+                        model.predict(
+                            n=24,
+                            series=[
+                                val_y_s[k][j - model.input_chunk_length : j]
+                                for j in range(
+                                    i,
+                                    min(
+                                        i + PREDICT_ROLLING_WINDOW_SIZE,
+                                        val_length - 24,
+                                    ),
+                                )
+                                for k in range(len(val_y_s))
+                            ],
+                            n_jobs=1,
+                        )
+                    )
+        elif isinstance(
+            model,
+            (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
+        ):
+            raw_preds = []
+            for i in range(24, val_length - 24):
+                for k in range(len(val_y_s)):
+                    raw_preds.append(
+                        model.predict(
+                            n=24,
+                            series=val_y_s[k][:i],
+                        )
+                    )
+        elif isinstance(model, TorchForecastingModel):
+            raw_preds = []
+            for i in range(
+                model.input_chunk_length,
+                val_length - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            val_y_s[k][j - model.input_chunk_length : j]
+                            for j in range(
+                                i,
+                                min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
+                            )
+                            for k in range(len(val_y_s))
+                        ],
+                        future_covariates=[
+                            val_fut_s[k][j - model.input_chunk_length : j + 24]
+                            for j in range(
+                                i,
+                                min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
+                            )
+                            for k in range(len(val_fut_s))
+                        ],
+                        n_jobs=1,
+                    )
+                )
+        elif isinstance(model, XGBModel):
+            raw_preds = []
+            lags = config.get("lags", 24)
+            # Determine required target history length from lags (support int or list of negative offsets)
+            if isinstance(lags, int):
+                required_target_history = int(lags)
+            else:
+                required_target_history = -min(lags)
+
+            lags_future_covariates_p = config.get("lags_future_covariates_p", 12)
+            lags_future_covariates_f = config.get("lags_future_covariates_f", 0)
+            if isinstance(lags_future_covariates_p, int):
+                required_past_cov_history = int(lags_future_covariates_p)
+            else:
+                required_past_cov_history = -min(lags_future_covariates_p)
+
+            window = max(required_target_history, required_past_cov_history)
+            for i in range(
+                window,
+                val_length - 24,
+                PREDICT_ROLLING_WINDOW_SIZE,
+            ):
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            val_y_s[k][j - window : j]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    val_length - 24 - lags_future_covariates_f,
+                                ),
+                            )
+                            for k in range(len(val_y_s))
+                        ],
+                        future_covariates=[
+                            val_fut_s[k][j - window : j + 24 + lags_future_covariates_f]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    val_length - 24 - lags_future_covariates_f,
+                                ),
+                            )
+                            for k in range(len(val_fut_s))
+                        ],
+                    )
+                )
+        else:
+            raise ValueError(f"Unsupported model type: {type(model)}")
+        time_taken = time.perf_counter() - t0
+        print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+
+        # Inverse transform actual validation series correctly (undo scaler then target transform)
+        t0 = time.perf_counter()
+        actual_val = feature_df["lmp_lf_avg"].loc[
+            raw_preds[0].time_index[0] : raw_preds[-1].time_index[-1]
+        ]
+        actual_val = TimeSeries.from_series(actual_val)
+        lmp_series = feature_df["lmp_rt"].loc[
+            raw_preds[0].time_index[0] - pd.Timedelta(minutes=5) : raw_preds[-1].time_index[0]
+        ]
+        preds: list[TimeSeries] = []
+        for pred in raw_preds:
+            inv_norm = y_transformer.inverse_transform(pred)
+            preds.append(transformer_cls.inverse_transform_darts_timeseries(inv_norm))
+        time_taken = time.perf_counter() - t0
+        print(
+            f"Inverse transforming predictions for model {run_name} took {time_taken:.3f}s"
+        )
+        if post_run_logging:
+            return _post_run_logging(
+                preds,
+                actual_val,
+                model,
+                pnode_id,
+                subset_data_size=subset_data_size,
+                day_start=day_start,
+                week_start=week_start,
+                show_graphs=show_graphs,
+                omitted_test_size=omitted_test_size,
+                lmp_series=lmp_series,
+                lf=True,
+            )
+
+        return preds, actual_val
 
 
 def test_fut_cov_train():

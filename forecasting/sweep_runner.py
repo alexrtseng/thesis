@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 
 import wandb
@@ -6,9 +8,12 @@ from forecasting.train import (
     WANDB_PROJECT_NAME_HF_ARB,
     build_series_for_node,
     train_hf_model,
+    train_lf_model,
 )
 
 from .model_zoo import ModelName, make_registry
+
+DEV = os.getenv("DEV", "1") == "1"
 
 
 def run_sweep_for_node(
@@ -18,7 +23,7 @@ def run_sweep_for_node(
     project: str,
     count: int = 50,
     subset_data_size: float = 1.0,
-    test_size: float = 51840, # about 6 months of 5-minute data
+    test_size: float = 51840,  # about 6 months of 5-minute data
 ):
     if model_name == ModelName.KALMANFORECASTER:
         subset_data_size = min(0.2, subset_data_size)
@@ -30,7 +35,7 @@ def run_sweep_for_node(
         subset_data_size = min(0.5, subset_data_size)
     total = len(feature_df) - test_size
     keep = max(1, int(total * subset_data_size))
-    df = feature_df[-(keep + test_size):-test_size].copy()
+    df = feature_df[-(keep + test_size) : -test_size].copy()
     reg = make_registry()
     assert model_name in reg, f"Unknown model: {model_name}"
     spec = reg[model_name]
@@ -49,7 +54,53 @@ def run_sweep_for_node(
             config=config,
             post_run_logging=True,
             omitted_test_size=test_size,
-            verbose=True,
+            verbose=DEV,
+        )
+
+    wandb.agent(sweep_id, function=_fn, project=project, count=count)
+
+
+def run_lf_sweep_for_node(
+    model_name: ModelName,
+    pnode_id: int,
+    feature_df: pd.DataFrame,
+    hourly_feature_dfs: list[pd.DataFrame],
+    project: str,
+    count: int = 50,
+    subset_data_size: float = 1.0,
+    test_size: float = 4320,  # about 6 months of hourly data
+):
+    _hourly_feature_dfs = hourly_feature_dfs.copy()
+    for i in range(len(_hourly_feature_dfs)):
+        _hourly_feature_dfs[i] = _hourly_feature_dfs[i][
+            : len(_hourly_feature_dfs[11])
+        ]  # align lengths
+    total = len(_hourly_feature_dfs[0]) - test_size
+    keep = max(1, int(total * subset_data_size))
+    for i in range(len(_hourly_feature_dfs)):
+        _hourly_feature_dfs[i] = _hourly_feature_dfs[i][
+            -(keep + test_size) : -test_size
+        ]
+    reg = make_registry()
+    assert model_name in reg, f"Unknown model: {model_name}"
+    spec = reg[model_name]
+    count = min(count, spec.max_needed_runs)
+
+    sweep_cfg = spec.sweep_config()
+    wandb.login(key=WANDB_API_KEY)
+    sweep_id = wandb.sweep(sweep=sweep_cfg, project=project)
+
+    def _fn(config=None):
+        train_lf_model(
+            feature_df=feature_df,
+            hourly_feature_dfs=_hourly_feature_dfs,
+            model_name=model_name,
+            pnode_id=pnode_id,
+            subset_data_size=subset_data_size,
+            config=config,
+            post_run_logging=True,
+            omitted_test_size=test_size,
+            verbose=DEV,
         )
 
     wandb.agent(sweep_id, function=_fn, project=project, count=count)

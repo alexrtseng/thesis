@@ -148,9 +148,8 @@ def short_horizon_pred_performance(
     combined_decisions = combined_decisions.sort_index()
     combined_decisions = combined_decisions.dropna(how="any")
     perf_val = np.sum(
-        (combined_decisions["charge_mw_perf"] - combined_decisions["discharge_mw_perf"])
-        * 5.0
-        / 60.0
+        (combined_decisions["discharge_mw_perf"] - combined_decisions["charge_mw_perf"])
+        * (5.0 / 60.0)
         * combined_decisions["lmp"]
     )
     vals = {}
@@ -159,17 +158,140 @@ def short_horizon_pred_performance(
         vals[f"pct_perf_hor_{horizon}"] = (
             np.sum(
                 (
-                    combined_decisions[f"charge_mw_{horizon}"]
-                    - combined_decisions[f"discharge_mw_{horizon}"]
+                    combined_decisions[f"discharge_mw_{horizon}"]
+                    - combined_decisions[f"charge_mw_{horizon}"]
                 )
-                * 5.0
-                / 60.0
+                * (5.0 / 60.0)
                 * combined_decisions["lmp"]
             )
             / perf_val
         )
 
     return combined_decisions, vals
+
+
+def _long_horizon_pred_performance(
+    preds_hourly: list[TimeSeries], _prices_series: pd.Series, hf_horizon: int
+) -> pd.DataFrame:
+    print(f"Running long horizon performance with hf_horizon={hf_horizon}")
+    prices_series = _prices_series.copy()
+    start_time = prices_series.index[0]
+    assert len(prices_series) == len(preds_hourly)
+    start: pd.Timestamp = pd.to_datetime(start_time)
+
+    # Build mixed index: K 5-min steps then hourly to end-of-day
+    hf_index = pd.date_range(start=start, periods=hf_horizon + 1, freq="5min")
+    day_end = start + pd.Timedelta(days=1)
+    hourly_start = hf_index[-1].ceil("h") if len(hf_index) > 0 else start
+    hourly_index = (
+        pd.date_range(start=hourly_start, end=day_end, freq="h")
+        if hourly_start < day_end
+        else pd.DatetimeIndex([])
+    )
+    prices_index = hf_index.append(hourly_index)
+
+    pred_arrays = []
+    # Avoid running past data; mirror the short-horizon guard
+    limit = max(0, len(preds_hourly) - 24 * 12)
+    for i, pred in enumerate(preds_hourly[:limit]):
+        arr = np.empty(len(prices_index), dtype=float)
+        # initial point aligned with origin i
+        arr[0] = prices_series.loc[start_time + pd.Timedelta(minutes=5 * i)]
+        # first K steps: actual 5-min prices
+        actual_segment = prices_series.reindex(
+            pd.date_range(
+                start=start + pd.Timedelta(minutes=5 * i),
+                periods=hf_horizon,
+                freq="5min",
+            )
+        ).to_numpy(dtype=float)
+        arr[1 : hf_horizon + 1] = actual_segment
+        # hourly part: use hourly forecast values directly
+        if len(hourly_index) > 0:
+            hourly_values = pred.values().reshape(-1)
+            h_needed = len(hourly_index)
+            arr[hf_horizon + 1 :] = hourly_values[:h_needed]
+        pred_arrays.append(arr)
+
+    model, soe, charge, discharge, times, dt_vec, init_soe_constr = build_battery_model(
+        prices_index=prices_index, battery=DEFAULT_BATTERY, requires_equivalent_soe=True
+    )
+    current_soe = DEFAULT_BATTERY.initial_charge_mwh
+    charge_decisions = []
+    discharge_decisions = []
+    for arr in pred_arrays:
+        set_objective(model, charge, discharge, times, arr, dt_vec)
+        update_initial_charge(model, init_soe_constr, soe, current_soe)
+        model.optimize()
+        if model.Status != gp.GRB.OPTIMAL:
+            raise RuntimeError("MPC step did not reach optimal solution")
+        current_soe = float(soe.X[1])
+        charge_decisions.append(float(charge.X[0]))
+        discharge_decisions.append(float(discharge.X[0]))
+
+    out_df = pd.DataFrame(
+        {
+            "charge_mw": charge_decisions,
+            "discharge_mw": discharge_decisions,
+        },
+        index=prices_series.index[:limit],
+    )
+    return out_df
+
+
+def long_horizon_pred_performance(
+    preds: list[TimeSeries], lmp_series: pd.Series
+) -> tuple[pd.DataFrame, Dict[str, float]]:
+    start = preds[0].time_index[0] - pd.Timedelta(minutes=5)
+    end = preds[-1].time_index[0] - pd.Timedelta(minutes=5)
+    _lmp_series = lmp_series.loc[start:end].copy()
+    _lmp_series = _lmp_series.rename("lmp")
+    _lmp_series.dropna(inplace=True)
+
+    # Perfect foresight baseline
+    perf_decisions, _ = deterministic_arbitrage_opt(
+        prices_df=_lmp_series.to_frame("lmp"),
+        require_equivalent_soe=True,
+    )
+
+    # Evaluate 3, 6, 9 high-fidelity steps
+    for_3 = _long_horizon_pred_performance(preds, _lmp_series, 3)[
+        ["charge_mw", "discharge_mw"]
+    ]
+    for_6 = _long_horizon_pred_performance(preds, _lmp_series, 6)[
+        ["charge_mw", "discharge_mw"]
+    ]
+    for_9 = _long_horizon_pred_performance(preds, _lmp_series, 9)[
+        ["charge_mw", "discharge_mw"]
+    ]
+
+    frames = [perf_decisions.add_suffix("_perf")]
+    frames.append(for_3.add_suffix("_3"))
+    frames.append(for_6.add_suffix("_6"))
+    frames.append(for_9.add_suffix("_9"))
+    frames.append(_lmp_series.to_frame("lmp"))
+
+    combined = pd.concat(frames, axis=1, join="outer").sort_index().dropna(how="any")
+
+    perf_val = np.sum(
+        (combined["charge_mw_perf"] - combined["discharge_mw_perf"])
+        * (5.0 / 60.0)
+        * combined["lmp"]
+    )
+    vals: Dict[str, float] = {}
+    for horizon in [3, 6, 9]:
+        vals[f"pct_perf_hor_{horizon}"] = (
+            np.sum(
+                (combined[f"charge_mw_{horizon}"] - combined[f"discharge_mw_{horizon}"])
+                * (5.0 / 60.0)
+                * combined["lmp"]
+            )
+            / perf_val
+            if perf_val != 0
+            else float("nan")
+        )
+
+    return combined, vals
 
 
 def calculate_metrics(pred_df: pd.DataFrame) -> Dict[str, float]:

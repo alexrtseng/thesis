@@ -89,6 +89,7 @@ def plot_opt_vs_perf_samples(
     seed: int = 42,
     save_dir: Optional[str] = None,
     show: bool = False,
+    lf: bool = False,
 ):
     """Generate four plots separating price+horizon curves from net decisions.
 
@@ -115,6 +116,9 @@ def plot_opt_vs_perf_samples(
     )
     combined_df["net_forecast_mw"] = (
         combined_df[forecast_charge_col] - combined_df[forecast_discharge_col]
+    )
+    combined_df["lmp_lf_avg"] = (
+        combined_df["lmp"].rolling(window=13, center=True, min_periods=1).mean()
     )
 
     # Decide day/week windows
@@ -164,6 +168,13 @@ def plot_opt_vs_perf_samples(
         day_decisions[price_col],
         color="tab:blue",
         label="Actual Price",
+        linewidth=1.6,
+    )
+    ax_day_price.plot(
+        day_decisions.index,
+        day_decisions["lmp_lf_avg"],
+        color="tab:brown",
+        label="Averaged Price",
         linewidth=1.6,
     )
 
@@ -248,6 +259,13 @@ def plot_opt_vs_perf_samples(
         week_decisions[price_col],
         color="tab:blue",
         label="Actual Price",
+        linewidth=1.3,
+    )
+    ax_week_price.plot(
+        week_decisions.index,
+        week_decisions["lmp_lf_avg"],
+        color="tab:brown",
+        label="Averaged Price",
         linewidth=1.3,
     )
 

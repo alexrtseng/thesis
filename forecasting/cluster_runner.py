@@ -39,7 +39,8 @@ import pandas as pd
 import torch
 
 from forecasting.model_zoo import ModelName, make_registry
-from forecasting.sweep_runner import build_series_for_node, run_sweep_for_node
+from forecasting.sweep_runner import build_series_for_node, run_lf_sweep_for_node, run_sweep_for_node
+from forecasting.train import WANDB_PROJECT_NAME_HF_ARB, WANDB_PROJECT_NAME_LF_ARB
 
 torch.set_float32_matmul_precision("medium")
 
@@ -69,13 +70,18 @@ def _worker(
     model_name: ModelName,
     pnode_id: int,
     feature_df: pd.DataFrame,
-    project: str,
     count: int,
     subset_data_size: float,
     gpu_id: int | None,
     delay_start: float,
     status_queue: Queue,
+    lf: bool,
+    hourly_feature_dfs: List[pd.DataFrame] | None,
 ):
+    if lf:
+        assert hourly_feature_dfs is not None, (
+            "hourly_feature_dfs must be provided for LF runs"
+        )
     try:
         if gpu_id is not None:
             # Isolate a single GPU per process and hint Lightning to use it
@@ -91,14 +97,25 @@ def _worker(
                 pass
         time.sleep(delay_start)
         status_queue.put((model_name.value, "starting"))
-        run_sweep_for_node(
-            model_name=model_name,
-            pnode_id=pnode_id,
-            feature_df=feature_df,
-            project=project,
-            count=count,
-            subset_data_size=subset_data_size,
-        )
+        if lf:
+            run_lf_sweep_for_node(
+                model_name=model_name,
+                pnode_id=pnode_id,
+                feature_df=feature_df,
+                project=WANDB_PROJECT_NAME_LF_ARB,
+                count=count,
+                subset_data_size=subset_data_size,
+                hourly_feature_dfs=hourly_feature_dfs,
+            )
+        else:
+            run_sweep_for_node(
+                model_name=model_name,
+                pnode_id=pnode_id,
+                feature_df=feature_df,
+                project=WANDB_PROJECT_NAME_HF_ARB,
+                count=count,
+                subset_data_size=subset_data_size,
+            )
         status_queue.put((model_name.value, "completed"))
     except Exception as e:
         status_queue.put((model_name.value, f"error: {e}"))
@@ -120,12 +137,12 @@ class GracefulTerminator:
 
 def run_parallel(
     pnode_id: int,
-    project: str,
     models: List[ModelName],
     runs_per_model: int,
     max_processes: int,
     subset_data_size: float,
     use_gpus: bool,
+    lf: bool = False,
 ):
     feature_df = build_series_for_node(pnode_id)
     status_queue: Queue = Queue()
@@ -147,6 +164,14 @@ def run_parallel(
     # Build queue of (pnode, model) tasks
     launch_queue = models.copy()
     active: List[Process] = []
+    hourly_feature_dfs = None
+    if lf:
+        feature_df["lmp_lf_avg"] = (
+            feature_df["lmp_rt"].rolling(window=13, center=True, min_periods=1).mean()
+        )
+        # create 12 hourly-offset dataframes (each keeps all columns, preserves original timestamps)
+        hourly_feature_dfs = [feature_df.iloc[i::12].copy() for i in range(12)]
+        
     while launch_queue or active:
         # Launch new processes if slots available
         while launch_queue and len(active) < max_processes:
@@ -161,12 +186,13 @@ def run_parallel(
                     model,
                     pnode_id,
                     feature_df,
-                    project,
                     runs_per_model,
                     subset_data_size,
                     gpu_id,
                     delay,
                     status_queue,
+                    lf,
+                    hourly_feature_dfs,
                 ),
                 daemon=True,
             )
@@ -238,13 +264,18 @@ def main():
         "--runs-per-model", type=int, default=2, help="Sweep runs per model"
     )
     parser.add_argument(
-        "--max-proc", type=int, default=2, help="Maximum concurrent processes"
+        "--max-proc", type=int, default=1, help="Maximum concurrent processes"
     )
     parser.add_argument(
         "--subset-data-size",
         type=float,
         default=0.05,
         help="Fraction of most recent data to keep (0<x<=1)",
+    )
+    parser.add_argument(
+        "--lf",
+        action="store_true",
+        help="Run low-frequency (LF) model sweeps instead of high-frequency (HF)",
     )
     # Proper boolean flags for GPU usage
     group = parser.add_mutually_exclusive_group()
@@ -316,7 +347,7 @@ def main():
     pnode_id = int(args.pnode)
 
     print(
-        f"Launching parallel sweeps: pnode={pnode_id} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu)"
+        f"Launching parallel sweeps: pnode={pnode_id} models={[m.value for m in model_list]} runs_per_model={args.runs_per_model} max_proc={args.max_proc} subset_data_size={args.subset_data_size} use_gpus={args.use_gpus} (filtered by uses_gpu), lf={args.lf}"
     )
 
     # if args.use_gpus:
@@ -330,12 +361,12 @@ def main():
     # else:
     run_parallel(
         pnode_id=pnode_id,
-        project="thesis-hf-forecasters",
         models=model_list,
         runs_per_model=args.runs_per_model,
         max_processes=args.max_proc,
         subset_data_size=args.subset_data_size,
         use_gpus=args.use_gpus,
+        lf=args.lf,
     )
 
 

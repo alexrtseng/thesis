@@ -4,7 +4,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=256G
+#SBATCH --mem=128G
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --export=ALL
@@ -40,6 +40,7 @@ export MAX_PROC=${MAX_PROC:-3}
 export SUBSET=${SUBSET:-1.0}
 export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
+export DEV=0
 
 PYBIN="$(command -v python)"
 

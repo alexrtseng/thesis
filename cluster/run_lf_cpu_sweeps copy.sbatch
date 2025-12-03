@@ -1,9 +1,8 @@
 #!/bin/bash -l
-#SBATCH --job-name=thesis-gpu-sweeps
+#SBATCH --job-name=thesis-cpu-sweeps
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=128G
 #SBATCH --nodes=1
@@ -36,9 +35,9 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 # experiment knobs (can override with --export)
 export PNODES=${PNODES:-2156113094}
 export MODELS=${MODELS:-ALL}
-export RUNS_PER_MODEL=${RUNS_PER_MODEL:-30}
-export MAX_PROC=${MAX_PROC:-4}
-export SUBSET=${SUBSET:-0.8}
+export RUNS_PER_MODEL=${RUNS_PER_MODEL:-20}
+export MAX_PROC=${MAX_PROC:-3}
+export SUBSET=${SUBSET:-1.0}
 export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
 export DEV=0
@@ -46,9 +45,6 @@ export DEV=0
 PYBIN="$(command -v python)"
 
 # quick diagnostics (these lines appear in logs/%x_%j.out)
-nvidia-smi || true
-$PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
-
 # launch job
 srun -u "$PYBIN" -m forecasting.cluster_runner \
   --pnode "$PNODES" \
@@ -56,4 +52,4 @@ srun -u "$PYBIN" -m forecasting.cluster_runner \
   --runs-per-model "$RUNS_PER_MODEL" \
   --max-proc "$MAX_PROC" \
   --subset-data-size "$SUBSET" \
-  --use-gpus
+  --lf
