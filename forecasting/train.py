@@ -297,25 +297,42 @@ def predict_hf_model(model, y_s, fut_s, past_s, config, run_name: str):
             len(y_s) - 24,
             PREDICT_ROLLING_WINDOW_SIZE,
         ):
-            j_stop = min(
-                i + PREDICT_ROLLING_WINDOW_SIZE,
-                len(y_s) - 24,
-            )
-            raw_preds.extend(
-                model.predict(
-                    n=24,
-                    series=[
-                        y_s[j - model.input_chunk_length : j] for j in range(i, j_stop)
-                    ],
-                    past_covariates=[
-                        past_s[j - model.input_chunk_length : j + 24]
-                        for j in range(i, j_stop)
-                    ]
-                    if past_s is not None
-                    else None,
-                    n_jobs=1,
+            if config.get("include_delayed_covariates", False):
+                j_stop = min(
+                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                    len(y_s) - 24,
                 )
-            )
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            y_s[j - model.input_chunk_length : j]
+                            for j in range(i, j_stop)
+                        ],
+                        past_covariates=[
+                            past_s[j - model.input_chunk_length : j + 24]
+                            for j in range(i, j_stop)
+                        ],
+                        n_jobs=1,
+                    )
+                )
+            else:
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            y_s[j - model.input_chunk_length : j]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    len(y_s) - 24,
+                                ),
+                            )
+                        ],
+                        n_jobs=1,
+                    )
+                )
     elif isinstance(
         model,
         (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
@@ -406,6 +423,7 @@ def predict_hf_model(model, y_s, fut_s, past_s, config, run_name: str):
         raise ValueError(f"Unsupported model type: {type(model)}")
     time_taken = time.perf_counter() - t0
     print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+
     return raw_preds
 
 
@@ -455,6 +473,7 @@ def train_hf_model(
         feat_transformer = Scaler()
         train_fut_s = feat_transformer.fit_transform(train_fut)
         val_fut_s = feat_transformer.transform(val_fut)
+        val_past_s = None
 
         if isinstance(model, PastCovariatesTorchModel):
             if config.get("include_delayed_covariates", False):
@@ -504,13 +523,11 @@ def train_hf_model(
 
         raw_preds = predict_hf_model(
             model,
-            y_s=val_y_s,
-            fut_s=val_fut_s,
-            past_s=val_past_s
-            if config.get("include_delayed_covariates", False)
-            else None,
-            config=config,
-            run_name=run_name,
+            val_y_s,
+            val_fut_s,
+            val_past_s,
+            config,
+            run_name,
         )
 
         # Inverse transform actual validation series correctly (undo scaler then target transform)
@@ -540,6 +557,155 @@ def train_hf_model(
 
         return preds, actual_val
 
+
+def predict_lf_model(model, y_s_list, fut_s_list, past_s_list, config, run_name: str):
+    t0 = time.perf_counter()
+    # include naive rolling window
+    raw_preds: list[TimeSeries]
+    val_length = len(y_s_list[0])
+    print(f"Validation series length: {val_length} -> {val_length * 12}")
+    if isinstance(model, PastCovariatesTorchModel):
+        raw_preds = []
+        for i in range(
+            model.input_chunk_length,
+            val_length - 24,
+            PREDICT_ROLLING_WINDOW_SIZE,
+        ):
+            if config.get("include_delayed_covariates", False):
+                j_stop = min(
+                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                    val_length - 24,
+                )
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            y_s_list[k][j - model.input_chunk_length : j]
+                            for j in range(i, j_stop)
+                            for k in range(len(y_s_list))
+                        ],
+                        past_covariates=[
+                            past_s_list[k][j - model.input_chunk_length : j + 24]
+                            for j in range(i, j_stop)
+                            for k in range(len(y_s_list))
+                        ],
+                        n_jobs=1,
+                    )
+                )
+            else:
+                raw_preds.extend(
+                    model.predict(
+                        n=24,
+                        series=[
+                            y_s_list[k][j - model.input_chunk_length : j]
+                            for j in range(
+                                i,
+                                min(
+                                    i + PREDICT_ROLLING_WINDOW_SIZE,
+                                    val_length - 24,
+                                ),
+                            )
+                            for k in range(len(y_s_list))
+                        ],
+                        n_jobs=1,
+                    )
+                )
+    elif isinstance(
+        model,
+        (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
+    ):
+        raw_preds = []
+        for i in range(24, val_length - 24):
+            for k in range(len(y_s_list)):
+                raw_preds.append(
+                    model.predict(
+                        n=24,
+                        series=y_s_list[k][:i],
+                    )
+                )
+    elif isinstance(model, TorchForecastingModel):
+        raw_preds = []
+        for i in range(
+            model.input_chunk_length,
+            val_length - 24,
+            PREDICT_ROLLING_WINDOW_SIZE,
+        ):
+            raw_preds.extend(
+                model.predict(
+                    n=24,
+                    series=[
+                        y_s_list[k][j - model.input_chunk_length : j]
+                        for j in range(
+                            i,
+                            min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
+                        )
+                        for k in range(len(y_s_list))
+                    ],
+                    future_covariates=[
+                        fut_s_list[k][j - model.input_chunk_length : j + 24]
+                        for j in range(
+                            i,
+                            min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
+                        )
+                        for k in range(len(fut_s_list))
+                    ],
+                    n_jobs=1,
+                )
+            )
+    elif isinstance(model, XGBModel):
+        raw_preds = []
+        lags = config.get("lags", 24)
+        # Determine required target history length from lags (support int or list of negative offsets)
+        if isinstance(lags, int):
+            required_target_history = int(lags)
+        else:
+            required_target_history = -min(lags)
+
+        lags_future_covariates_p = config.get("lags_future_covariates_p", 12)
+        lags_future_covariates_f = config.get("lags_future_covariates_f", 0)
+        if isinstance(lags_future_covariates_p, int):
+            required_past_cov_history = int(lags_future_covariates_p)
+        else:
+            required_past_cov_history = -min(lags_future_covariates_p)
+
+        window = max(required_target_history, required_past_cov_history)
+        for i in range(
+            window,
+            val_length - 24,
+            PREDICT_ROLLING_WINDOW_SIZE,
+        ):
+            raw_preds.extend(
+                model.predict(
+                    n=24,
+                    series=[
+                        y_s_list[k][j - window : j]
+                        for j in range(
+                            i,
+                            min(
+                                i + PREDICT_ROLLING_WINDOW_SIZE,
+                                val_length - 24 - lags_future_covariates_f,
+                            ),
+                        )
+                        for k in range(len(y_s_list))
+                    ],
+                    future_covariates=[
+                        fut_s_list[k][j - window : j + 24 + lags_future_covariates_f]
+                        for j in range(
+                            i,
+                            min(
+                                i + PREDICT_ROLLING_WINDOW_SIZE,
+                                val_length - 24 - lags_future_covariates_f,
+                            ),
+                        )
+                        for k in range(len(fut_s_list))
+                    ],
+                )
+            )
+    else:
+        raise ValueError(f"Unsupported model type: {type(model)}")
+    time_taken = time.perf_counter() - t0
+    print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+    return raw_preds
 
 def train_lf_model(
     feature_df: pd.DataFrame,
@@ -588,16 +754,16 @@ def train_lf_model(
                 delay = model.output_chunk_length + config.get(
                     "covariate_delay_steps", 0
                 )
-                train_train_s = []
-                val_train_s = []
+                train_past_s = []
+                val_past_s = []
                 for i in range(len(train_fut_s)):
-                    train_train_s.append(train_fut_s.shift(-delay))
-                    val_train_s.append(val_fut_s.shift(-delay))
+                    train_past_s.append(train_fut_s[i].shift(-delay))
+                    val_past_s.append(val_fut_s[i].shift(-delay))
                 model.fit(
                     series=train_y_s,
-                    past_covariates=train_train_s,
+                    past_covariates=train_past_s,
                     val_series=val_y_s,
-                    val_past_covariates=val_train_s,
+                    val_past_covariates=val_past_s,
                     verbose=verbose,
                 )
             else:
@@ -632,152 +798,14 @@ def train_lf_model(
         except Exception:
             pass
 
-        t0 = time.perf_counter()
-        # include naive rolling window
-        raw_preds: list[TimeSeries]
-        val_length = len(val_y_s[0])
-        print(f"Validation series length: {val_length} -> {val_length * 12}")
-        if isinstance(model, PastCovariatesTorchModel):
-            raw_preds = []
-            for i in range(
-                model.input_chunk_length,
-                val_length - 24,
-                PREDICT_ROLLING_WINDOW_SIZE,
-            ):
-                if config.get("include_delayed_covariates", False):
-                    j_stop = min(
-                        i + PREDICT_ROLLING_WINDOW_SIZE,
-                        val_length - 24,
-                    )
-                    raw_preds.extend(
-                        model.predict(
-                            n=24,
-                            series=[
-                                val_y_s[k][j - model.input_chunk_length : j]
-                                for j in range(i, j_stop)
-                                for k in range(len(val_y_s))
-                            ],
-                            past_covariates=[
-                                val_train_s[k][j - model.input_chunk_length : j + 24]
-                                for j in range(i, j_stop)
-                                for k in range(len(val_y_s))
-                            ],
-                            n_jobs=1,
-                        )
-                    )
-                else:
-                    raw_preds.extend(
-                        model.predict(
-                            n=24,
-                            series=[
-                                val_y_s[k][j - model.input_chunk_length : j]
-                                for j in range(
-                                    i,
-                                    min(
-                                        i + PREDICT_ROLLING_WINDOW_SIZE,
-                                        val_length - 24,
-                                    ),
-                                )
-                                for k in range(len(val_y_s))
-                            ],
-                            n_jobs=1,
-                        )
-                    )
-        elif isinstance(
+        raw_preds = predict_lf_model(
             model,
-            (StatsForecastModel, TransferableFutureCovariatesLocalForecastingModel),
-        ):
-            raw_preds = []
-            for i in range(24, val_length - 24):
-                for k in range(len(val_y_s)):
-                    raw_preds.append(
-                        model.predict(
-                            n=24,
-                            series=val_y_s[k][:i],
-                        )
-                    )
-        elif isinstance(model, TorchForecastingModel):
-            raw_preds = []
-            for i in range(
-                model.input_chunk_length,
-                val_length - 24,
-                PREDICT_ROLLING_WINDOW_SIZE,
-            ):
-                raw_preds.extend(
-                    model.predict(
-                        n=24,
-                        series=[
-                            val_y_s[k][j - model.input_chunk_length : j]
-                            for j in range(
-                                i,
-                                min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
-                            )
-                            for k in range(len(val_y_s))
-                        ],
-                        future_covariates=[
-                            val_fut_s[k][j - model.input_chunk_length : j + 24]
-                            for j in range(
-                                i,
-                                min(i + PREDICT_ROLLING_WINDOW_SIZE, val_length - 24),
-                            )
-                            for k in range(len(val_fut_s))
-                        ],
-                        n_jobs=1,
-                    )
-                )
-        elif isinstance(model, XGBModel):
-            raw_preds = []
-            lags = config.get("lags", 24)
-            # Determine required target history length from lags (support int or list of negative offsets)
-            if isinstance(lags, int):
-                required_target_history = int(lags)
-            else:
-                required_target_history = -min(lags)
-
-            lags_future_covariates_p = config.get("lags_future_covariates_p", 12)
-            lags_future_covariates_f = config.get("lags_future_covariates_f", 0)
-            if isinstance(lags_future_covariates_p, int):
-                required_past_cov_history = int(lags_future_covariates_p)
-            else:
-                required_past_cov_history = -min(lags_future_covariates_p)
-
-            window = max(required_target_history, required_past_cov_history)
-            for i in range(
-                window,
-                val_length - 24,
-                PREDICT_ROLLING_WINDOW_SIZE,
-            ):
-                raw_preds.extend(
-                    model.predict(
-                        n=24,
-                        series=[
-                            val_y_s[k][j - window : j]
-                            for j in range(
-                                i,
-                                min(
-                                    i + PREDICT_ROLLING_WINDOW_SIZE,
-                                    val_length - 24 - lags_future_covariates_f,
-                                ),
-                            )
-                            for k in range(len(val_y_s))
-                        ],
-                        future_covariates=[
-                            val_fut_s[k][j - window : j + 24 + lags_future_covariates_f]
-                            for j in range(
-                                i,
-                                min(
-                                    i + PREDICT_ROLLING_WINDOW_SIZE,
-                                    val_length - 24 - lags_future_covariates_f,
-                                ),
-                            )
-                            for k in range(len(val_fut_s))
-                        ],
-                    )
-                )
-        else:
-            raise ValueError(f"Unsupported model type: {type(model)}")
-        time_taken = time.perf_counter() - t0
-        print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+            val_y_s,
+            val_fut_s,
+            val_past_s,
+            config,
+            run_name,
+        )
 
         # Inverse transform actual validation series correctly (undo scaler then target transform)
         t0 = time.perf_counter()
