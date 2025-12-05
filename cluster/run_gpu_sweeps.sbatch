@@ -3,7 +3,7 @@
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=128G
 #SBATCH --nodes=1
@@ -37,7 +37,7 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 export PNODES=${PNODES:-2156113094}
 export MODELS=${MODELS:-ALL}
 export RUNS_PER_MODEL=${RUNS_PER_MODEL:-30}
-export MAX_PROC=${MAX_PROC:-4}
+export MAX_PROC=${MAX_PROC:-2}
 export SUBSET=${SUBSET:-0.8}
 export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
