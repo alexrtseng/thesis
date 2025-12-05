@@ -96,7 +96,7 @@ def build_series_for_node(pnode_id: int) -> pd.DataFrame:
     return feature_df
 
 
-def _prep_data(transformer_cls, feature_df: pd.DataFrame):
+def _prep_data(transformer_cls, feature_df: pd.DataFrame, train_size: float = 0.8):
     df = feature_df.copy()
     df["lmp_rt"] = transformer_cls.transform(df["lmp_rt"])
     df["lmp_da"] = transformer_cls.transform(df["lmp_da"])
@@ -112,7 +112,7 @@ def _prep_data(transformer_cls, feature_df: pd.DataFrame):
         value_cols=FEATURE_COLUMNS,
         freq="5min",
     ).astype(np.float32)
-    split_idx = int(len(target_series) * 0.8)
+    split_idx = int(len(target_series) * train_size)
     train_y, val_y = target_series[:split_idx], target_series[split_idx:]
     train_fut, val_fut = (
         future_covariates[:split_idx],
@@ -122,7 +122,10 @@ def _prep_data(transformer_cls, feature_df: pd.DataFrame):
 
 
 def _prep_data_lf(
-    transformer_cls, feature_df: pd.DataFrame, hourly_feature_dfs: list[pd.DataFrame]
+    transformer_cls,
+    feature_df: pd.DataFrame,
+    hourly_feature_dfs: list[pd.DataFrame],
+    train_size: float = 0.8,
 ):
     _hourly_feature_dfs = [df.copy() for df in hourly_feature_dfs]
     for i in range(len(_hourly_feature_dfs)):
@@ -150,7 +153,7 @@ def _prep_data_lf(
             value_cols=FEATURE_COLUMNS,
             freq="5min",
         ).astype(np.float32)
-        split_idx = int(len(target_series) * 0.8)
+        split_idx = int(len(target_series) * train_size)
         train_y_series.append(target_series[:split_idx])
         val_y_series.append(target_series[split_idx:])
         train_fut_series.append(future_covariates[:split_idx])
@@ -286,7 +289,7 @@ def _post_run_logging(
     return metrics, opt_results, preds_df, save_dir
 
 
-def predict_hf_model(model, y_s, fut_s, past_s, config, run_name: str):
+def predict_hf_model(model, y_s, fut_s, past_s, config, run_name: str | None):
     t0 = time.perf_counter()
     # include naive rolling window
     raw_preds: list[TimeSeries]
@@ -422,7 +425,10 @@ def predict_hf_model(model, y_s, fut_s, past_s, config, run_name: str):
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
     time_taken = time.perf_counter() - t0
-    print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+    if run_name is not None:
+        print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+    else:
+        print(f"Predicting took {time_taken:.3f}s")
 
     return raw_preds
 
@@ -558,7 +564,9 @@ def train_hf_model(
         return preds, actual_val
 
 
-def predict_lf_model(model, y_s_list, fut_s_list, past_s_list, config, run_name: str):
+def predict_lf_model(
+    model, y_s_list, fut_s_list, past_s_list, config, run_name: str | None
+):
     t0 = time.perf_counter()
     # include naive rolling window
     raw_preds: list[TimeSeries]
@@ -704,8 +712,12 @@ def predict_lf_model(model, y_s_list, fut_s_list, past_s_list, config, run_name:
     else:
         raise ValueError(f"Unsupported model type: {type(model)}")
     time_taken = time.perf_counter() - t0
-    print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+    if run_name is not None:
+        print(f"Predicting validation for model {run_name} took {time_taken:.3f}s")
+    else:
+        print(f"Predicting took {time_taken:.3f}s")
     return raw_preds
+
 
 def train_lf_model(
     feature_df: pd.DataFrame,
@@ -748,7 +760,8 @@ def train_lf_model(
         feat_transformer = Scaler(global_fit=True)
         train_fut_s = feat_transformer.fit_transform(train_fut_series)
         val_fut_s = feat_transformer.transform(val_fut_series)
-
+        train_past_s = None
+        val_past_s = None
         if isinstance(model, PastCovariatesTorchModel):
             if config.get("include_delayed_covariates", False):
                 delay = model.output_chunk_length + config.get(
