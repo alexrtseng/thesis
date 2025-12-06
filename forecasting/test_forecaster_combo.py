@@ -89,14 +89,15 @@ def _ind_test_logging(
     else:
         out_dir = _out_dir / "hf"
 
-    plot_opt_vs_perf_samples(
-        opt_results=opt_results,  # (combined_decisions_df, pct_dict)
-        preds_df=preds_df,
-        day=day_start,
-        week_start=week_start,
-        save_dir=out_dir,
-        show=show_graphs,
-    )
+    ## Plotting is too redundant for the combo tests
+    # plot_opt_vs_perf_samples(
+    #     opt_results=opt_results,  # (combined_decisions_df, pct_dict)
+    #     preds_df=preds_df,
+    #     day=day_start,
+    #     week_start=week_start,
+    #     save_dir=out_dir,
+    #     show=show_graphs,
+    # )
 
     metrics_path = out_dir / "metrics.json"
     metrics["test_size"] = size
@@ -104,9 +105,10 @@ def _ind_test_logging(
         json.dump(metrics, f, indent=2)
     print(f"Model saving and graph generation took {time.perf_counter() - t0:.3f}s")
 
-    t0 = time.perf_counter()
-    plot_residuals_and_save(preds_df, out_dir)
-    print(f"Residual plotting took {time.perf_counter() - t0:.3f}s")
+    ## Residual plots are too redundant for the combo tests
+    # t0 = time.perf_counter()
+    # plot_residuals_and_save(preds_df, out_dir)
+    # print(f"Residual plotting took {time.perf_counter() - t0:.3f}s")
 
     return metrics, opt_results, preds_df, out_dir
 
@@ -286,23 +288,23 @@ def evaluate_hf_lf_pair(
         feature_df,
     )
 
-    # _ind_test_logging(
-    #     hf_preds,
-    #     hf_actual_val,
-    #     test_size * 12,
-    #     out_dir,
-    #     lf=False,
-    # )
+    _ind_test_logging(
+        hf_preds,
+        hf_actual_val,
+        test_size * 12,
+        out_dir,
+        lf=False,
+    )
 
-    # if not pjm_da_preds:
-    #     _ind_test_logging(
-    #         lf_preds,
-    #         lf_actual_val,
-    #         test_size * 12,
-    #         out_dir,
-    #         lf=True,
-    #         lmp_series=lmp_series,
-    #     )
+    if not pjm_da_preds:
+        _ind_test_logging(
+            lf_preds,
+            lf_actual_val,
+            test_size * 12,
+            out_dir,
+            lf=True,
+            lmp_series=lmp_series,
+        )
 
     time_taken = time.perf_counter() - t1
     joint_opt_metrics["total_time_taken_s"] = time_taken
