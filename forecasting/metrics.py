@@ -11,6 +11,7 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - needed for 3D projection
 from deterministic.single_market_battery import (
     DEFAULT_BATTERY,
     deterministic_arbitrage_opt,
+    txbx,
 )
 from deterministic.warm_start_arb_solver import (
     build_battery_model,
@@ -289,6 +290,171 @@ def long_horizon_pred_performance(
             / perf_val
             if perf_val != 0
             else float("nan")
+        )
+
+    return combined, vals
+
+
+def _short_and_long_pred_performance(
+    hf_preds: list[TimeSeries],
+    lf_preds: list[TimeSeries],
+    _prices_series: pd.Series,
+    hf_horizon: int,
+):
+    print(f"Running joint pred performance with hf_horizon={hf_horizon}")
+    prices_series = _prices_series.copy()
+    start_time = prices_series.index[0]
+    # Ensure we have matching number of origins for LF forecasts
+    assert len(prices_series) == len(lf_preds)
+    start: pd.Timestamp = pd.to_datetime(start_time)
+
+    # Build mixed index: K 5-min steps then hourly to end-of-day
+    hf_index = pd.date_range(start=start, periods=hf_horizon + 1, freq="5min")
+    day_end = start + pd.Timedelta(days=1)
+    hourly_start = hf_index[-1].ceil("h") if len(hf_index) > 0 else start
+    hourly_index = (
+        pd.date_range(start=hourly_start, end=day_end, freq="h")
+        if hourly_start < day_end
+        else pd.DatetimeIndex([])
+    )
+    prices_index = hf_index.append(hourly_index)
+
+    pred_arrays = []
+    # Guard to avoid overruns similar to other helpers
+    limit = max(0, min(len(hf_preds), len(lf_preds)) - 24 * 12)
+    for i in range(limit):
+        hf_pred = hf_preds[i]
+        lf_pred = lf_preds[i]
+        arr = np.empty(len(prices_index), dtype=float)
+        # initial point aligned with origin i (use actual price at origin t)
+        arr[0] = prices_series.loc[start_time + pd.Timedelta(minutes=5 * i)]
+        # first K steps: use HF prediction values at 5-min resolution
+        hf_vals = hf_pred[:hf_horizon].values().reshape(-1)
+        arr[1 : hf_horizon + 1] = hf_vals
+        # hourly part: use LF hourly forecast values directly
+        if len(hourly_index) > 0:
+            hourly_values = lf_pred.values().reshape(-1)
+            h_needed = len(hourly_index)
+            arr[hf_horizon + 1 :] = hourly_values[:h_needed]
+        pred_arrays.append(arr)
+
+    model, soe, charge, discharge, times, dt_vec, init_soe_constr = build_battery_model(
+        prices_index=prices_index, battery=DEFAULT_BATTERY, requires_equivalent_soe=True
+    )
+    current_soe = DEFAULT_BATTERY.initial_charge_mwh
+    charge_decisions = []
+    discharge_decisions = []
+    for arr in pred_arrays:
+        set_objective(model, charge, discharge, times, arr, dt_vec)
+        update_initial_charge(model, init_soe_constr, soe, current_soe)
+        model.optimize()
+        if model.Status != gp.GRB.OPTIMAL:
+            raise RuntimeError("MPC step did not reach optimal solution")
+        current_soe = float(soe.X[1])
+        charge_decisions.append(float(charge.X[0]))
+        discharge_decisions.append(float(discharge.X[0]))
+
+    out_df = pd.DataFrame(
+        {
+            "charge_mw": charge_decisions,
+            "discharge_mw": discharge_decisions,
+        },
+        index=prices_series.index[:limit],
+    )
+    return out_df
+
+
+def short_and_long_pred_performance(
+    hf_preds: list[TimeSeries],
+    lf_preds: list[TimeSeries],
+    feature_df: pd.DataFrame,
+):
+    print(f"Prior to leveling, hf and lf pred lengths are: {len(hf_preds)}, {len(lf_preds)}")
+    start = max(
+        hf_preds[0].time_index[0] - pd.Timedelta(minutes=5),
+        lf_preds[0].time_index[0] - pd.Timedelta(minutes=5),
+    )
+    end = min(
+        hf_preds[-1].time_index[0] - pd.Timedelta(minutes=5),
+        lf_preds[-1].time_index[0] - pd.Timedelta(minutes=5),
+    )
+    _lmp_series = feature_df["lmp_rt"].loc[start:end].copy()
+    _lmp_series = _lmp_series.rename("lmp")
+    # align preds
+    _lmp_series.dropna(inplace=True)
+
+    def steps_between(t0: pd.Timestamp, t1: pd.Timestamp, step_minutes: int) -> int:
+        # round to nearest step to avoid float/int truncation issues
+        delta = (t1 - t0).total_seconds() / (60 * step_minutes)
+        return int(round(delta))
+
+    # compute how many origins to drop from the left/right to match [start, end]
+    drop_left_hf = max(0, steps_between(hf_preds[0].time_index[0], start + pd.Timedelta(minutes=5), 5))
+    drop_right_hf = max(0, steps_between(end + pd.Timedelta(minutes=5), hf_preds[-1].time_index[0], 5))
+    left_hf = drop_left_hf
+    right_hf_excl = len(hf_preds) - drop_right_hf
+    hf_preds = hf_preds[left_hf:right_hf_excl].copy()
+
+    drop_left_lf = max(0, steps_between(lf_preds[0].time_index[0], start + pd.Timedelta(minutes=5), 5))
+    drop_right_lf = max(0, steps_between(end + pd.Timedelta(minutes=5), lf_preds[-1].time_index[0], 5))
+    left_lf = drop_left_lf
+    right_lf_excl = len(lf_preds) - drop_right_lf
+    lf_preds = lf_preds[left_lf:right_lf_excl].copy()
+
+    print(f"After leveling, hf and lf pred lengths are: {len(hf_preds)}, {len(lf_preds)}")
+
+    # Perfect foresight and txbx baseline
+    perf_decisions, _ = deterministic_arbitrage_opt(
+        prices_df=_lmp_series.to_frame("lmp"),
+        require_equivalent_soe=True,
+    )
+    tb4_decisions, _ = txbx(prices_df=feature_df.loc[start:end])
+
+    # Evaluate combined HF+LF with 3, 6, 9 high-fidelity steps
+    for_3 = _short_and_long_pred_performance(hf_preds, lf_preds, _lmp_series, 3)[
+        ["charge_mw", "discharge_mw"]
+    ]
+    for_6 = _short_and_long_pred_performance(hf_preds, lf_preds, _lmp_series, 6)[
+        ["charge_mw", "discharge_mw"]
+    ]
+    for_9 = _short_and_long_pred_performance(hf_preds, lf_preds, _lmp_series, 9)[
+        ["charge_mw", "discharge_mw"]
+    ]
+
+    frames = [perf_decisions.add_suffix("_perf"), tb4_decisions.add_suffix("_tb4")]
+    frames.append(for_3.add_suffix("_3"))
+    frames.append(for_6.add_suffix("_6"))
+    frames.append(for_9.add_suffix("_9"))
+    frames.append(_lmp_series.to_frame("lmp"))
+
+    combined = pd.concat(frames, axis=1, join="outer").sort_index().dropna(how="any")
+
+    perf_val = np.sum(
+        (combined["discharge_mw_perf"] - combined["charge_mw_perf"])
+        * (5.0 / 60.0)
+        * combined["lmp"]
+    )
+    tb4_val = np.sum(
+        (combined["discharge_mw_tb4"] - combined["charge_mw_tb4"])
+        * (5.0 / 60.0)
+        * combined["lmp"]
+    )
+    vals: Dict[str, float] = {}
+    vals["perf_val"] = perf_val
+    vals["tb4_val"] = tb4_val
+    vals["pct_tb4_vs_perf"] = (tb4_val / perf_val) if perf_val != 0 else float("nan")
+    for horizon in [3, 6, 9]:
+        val_generated = np.sum(
+            (combined[f"discharge_mw_{horizon}"] - combined[f"charge_mw_{horizon}"])
+            * (5.0 / 60.0)
+            * combined["lmp"]
+        )
+
+        vals[f"pct_perf_hor_{horizon}"] = (
+            val_generated / perf_val if perf_val != 0 else float("nan")
+        )
+        vals[f"pct_tb4_hor_{horizon}"] = (
+            val_generated / tb4_val if tb4_val != 0 else float("nan")
         )
 
     return combined, vals

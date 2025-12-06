@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict
+from darts.models.forecasting.forecasting_model import ForecastingModel
 
 import torch
 from darts.models import (
@@ -56,6 +57,39 @@ class ModelName(Enum):
     TIDEMODEL = "TiDEModel"
     TSMIXERMODEL = "TSMixerModel"
     XGBMODEL = "XGBModel"
+
+def model_name_to_class(name: str) -> type[ForecastingModel]:
+    """Map a model name string to its corresponding Darts ForecastingModel class."""
+    name = name.lower()
+    mapping = {
+        "autoarima": AutoARIMA,
+        "autoets": AutoETS,
+        "autotheta": AutoTheta,
+        "kalmanforecaster": KalmanForecaster,
+        "rnnmodel": RNNModel,
+        "blockrnnmodel": BlockRNNModel,
+        "nbeatsmodel": NBEATSModel,
+        "nhitsmodel": NHiTSModel,
+        "tcnmodel": TCNModel,
+        "transformermodel": TransformerModel,
+        "tftmodel": TFTModel,
+        "dlinearmodel": DLinearModel,
+        "nlinearmodel": NLinearModel,
+        "tidemodel": TiDEModel,
+        "tsmixermodel": TSMixerModel,
+        "xgbmodel": XGBModel,
+    }
+    if name not in mapping:
+        raise ValueError(f"Unknown model name: {name}")
+    return mapping[name]
+
+def model_name_to_enum(name: str) -> ModelName:
+    """Convert a model name string to its corresponding ModelName enum."""
+    name = name.lower()
+    for model in ModelName:
+        if model.value.lower() == name:
+            return model
+    raise ValueError(f"Unknown model name: {name}")
 
 
 class ModelCategory(Enum):

@@ -134,11 +134,8 @@ def _process_node_worker(
         )
 
         # 5) Heuristic txbx
-        try:
-            _, tx_profit = txbx(node_prices_filled[["lmp"]], x=txbx_x, battery=battery)
-        except Exception as e:
-            print(f"  - txbx skipped for node {node_id}: {e}")
-            tx_profit = float("nan")
+        _, tx_profit = txbx(node_prices_filled[["lmp"]], x=txbx_x, battery=battery)
+
 
         return {
             "pnode_id": int(node_id),

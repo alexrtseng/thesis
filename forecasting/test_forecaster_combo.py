@@ -1,233 +1,324 @@
+import json
+import time
 from pathlib import Path
-from typing import Dict, Tuple
 
-import numpy as np
 import pandas as pd
 from darts import TimeSeries
-from darts.models.forecasting.forecasting_model import ForecastingModel
+from darts.dataprocessing.transformers import Scaler
 
-from deterministic.single_market_battery import (
-    DEFAULT_BATTERY,
-    deterministic_arbitrage_opt,
-)
-from deterministic.warm_start_arb_solver import (
-    build_battery_model,
-    set_objective,
-    update_initial_charge,
-)
+import wandb
+from forecasting.graphing import plot_opt_vs_perf_samples
 from forecasting.metrics import (
     calculate_metrics,
     long_horizon_pred_performance,
+    plot_residuals_and_save,
+    short_and_long_pred_performance,
     short_horizon_pred_performance,
 )
+from forecasting.model_zoo import model_name_to_class, model_name_to_enum
+from forecasting.sweep_runner import _hf_slice_feature_df, _lf_slice_features
+from forecasting.train import (
+    _get_preds_df,
+    _prep_data,
+    _prep_data_lf,
+    build_series_for_node,
+    predict_hf_model,
+    predict_lf_model,
+)
+from forecasting.transforms import name_to_transformer
+
+WANDB_ENTITY = "watt-our"
 
 
-def _load_model_from_outputs(
-    pnode_id: int, model_class_name: str, run_name: str
-) -> ForecastingModel:
-    base = Path("forecasting/outputs") / str(pnode_id) / model_class_name
-    # Find directory that contains the run_name
-    candidates = [d for d in base.glob(f"*{run_name}*") if d.is_dir()]
-    if not candidates:
-        raise FileNotFoundError(
-            f"No saved model dir found for {model_class_name} run '{run_name}' under {base}"
-        )
-    model_dir = sorted(candidates)[-1]
+def _load_model_from_outputs(run_path: str):
+    api = wandb.Api()
+    run = api.run(run_path)
+    cfg = run.config
+    summ = run.summary
+    model_class = summ["model_class"]
+    ModelClass = model_name_to_class(model_class)
+
+    model_dir = Path(summ["save_dir"])
     model_file = model_dir / "model.pkl"
-    ckpt_file = model_dir / "model.pkl.ckpt"
-    if ckpt_file.exists():
-        model_file = ckpt_file
-    if not model_file.exists():
-        raise FileNotFoundError(f"Model file not found at {model_file}")
+    print(f"Loading model from {model_file}")
     # Darts models support classmethod `load`
-    return ForecastingModel.load(str(model_file))
+    return ModelClass.load(str(model_file)), cfg, summ, run
 
 
-def _build_series_from_feature_df(
-    feature_df: pd.DataFrame,
-) -> Tuple[TimeSeries, TimeSeries]:
-    # Assumes feature_df has 5-min indexed columns 'lmp_rt' and covariates used by HF/LF models
-    target_series = TimeSeries.from_dataframe(
-        feature_df,
-        time_col=None,
-        value_cols="lmp_rt",
-        freq="5min",
+def _ind_test_logging(
+    preds,
+    actual_val,
+    size,
+    _out_dir: Path,
+    day_start: pd.Timestamp = None,
+    week_start: pd.Timestamp = None,
+    show_graphs: bool = False,
+    lf: bool = False,
+    lmp_series: pd.Series = None,
+):
+    print("Getting preds df")
+    t0 = time.perf_counter()
+    preds_df = _get_preds_df(
+        actual_val,
+        preds,
     )
-    return target_series, TimeSeries.from_dataframe(
-        feature_df,
-        time_col=None,
-        value_cols=[c for c in feature_df.columns if c != "lmp_rt"],
-        freq="5min",
+    print(f"Preds df conversion took {time.perf_counter() - t0:.3f}s")
+
+    print("Calculating metrics")
+    t0 = time.perf_counter()
+    metrics = calculate_metrics(preds_df)
+    print(f"Calculating metrics took {time.perf_counter() - t0:.3f}s")
+
+    print("Running opt metrics")
+    t0 = time.perf_counter()
+    if lf:
+        assert lmp_series is not None
+        opt_results = long_horizon_pred_performance(preds, lmp_series)
+    else:
+        opt_results = short_horizon_pred_performance(preds, preds_df, True)
+    print(f"Running opt metrics took {time.perf_counter() - t0:.3f}s")
+
+    # Save model using sweep + run name for traceability: <sweep>__<run>.pkl
+    opt_dict = opt_results[1]
+    if isinstance(opt_dict, dict):
+        metrics.update({f"opt/{k}": v for k, v in opt_dict.items()})
+
+    t0 = time.perf_counter()
+    if lf:
+        out_dir = _out_dir / "lf"
+    else:
+        out_dir = _out_dir / "hf"
+
+    plot_opt_vs_perf_samples(
+        opt_results=opt_results,  # (combined_decisions_df, pct_dict)
+        preds_df=preds_df,
+        day=day_start,
+        week_start=week_start,
+        save_dir=out_dir,
+        show=show_graphs,
     )
 
+    metrics_path = out_dir / "metrics.json"
+    metrics["test_size"] = size
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    print(f"Model saving and graph generation took {time.perf_counter() - t0:.3f}s")
 
-def _joint_optimization_with_hf_lf(
-    hf_preds: list[TimeSeries],
-    lf_preds: list[TimeSeries],
-    prices_df: pd.DataFrame,
-    hf_horizon: int,
-) -> pd.DataFrame:
-    """Run MPC using HF forecasts for first K 5-min steps and LF hourly thereafter.
+    t0 = time.perf_counter()
+    plot_residuals_and_save(preds_df, out_dir)
+    print(f"Residual plotting took {time.perf_counter() - t0:.3f}s")
 
-    Returns decisions indexed by 5-min origin timestamps over the evaluated window.
-    """
-    start_time = prices_df.index[0]
-    start = pd.to_datetime(start_time)
-    hf_index = pd.date_range(start=start, periods=hf_horizon + 1, freq="5min")
-    day_end = start + pd.Timedelta(days=1)
-    hourly_start = (
-        hf_index[-1] + pd.Timedelta(minutes=5) if len(hf_index) > 0 else start
-    )
-    hourly_index = (
-        pd.date_range(start=hourly_start, end=day_end, freq="h")
-        if hourly_start < day_end
-        else pd.DatetimeIndex([])
-    )
-    prices_index = hf_index.append(hourly_index)
+    return metrics, opt_results, preds_df, out_dir
 
-    # Evaluate up to the guard used elsewhere to avoid overruns
-    limit = max(0, min(len(hf_preds), len(lf_preds)) - 24 * 12)
-    pred_arrays = []
-    for i in range(limit):
-        hf = hf_preds[i]
-        lf = lf_preds[i] if i < len(lf_preds) else lf_preds[-1]
-        arr = np.empty(len(prices_index), dtype=float)
-        arr[0] = prices_df.loc[start_time + pd.Timedelta(minutes=5 * i), "lmp"]
-        # First K steps: use HF forecast values
-        hf_vals = hf[:hf_horizon].values().reshape(-1)
-        arr[1 : hf_horizon + 1] = hf_vals
-        # Hourly part: LF hourly forecast values
-        if len(hourly_index) > 0:
-            hourly_values = lf.values().reshape(-1)
-            h_needed = len(hourly_index)
-            arr[hf_horizon + 1 :] = hourly_values[:h_needed]
-        pred_arrays.append(arr)
 
-    model, soe, charge, discharge, times, dt_vec, init_soe_constr = build_battery_model(
-        prices_index=prices_index, battery=DEFAULT_BATTERY, requires_equivalent_soe=True
-    )
-    current_soe = DEFAULT_BATTERY.initial_charge_mwh
-    charge_decisions = []
-    discharge_decisions = []
-    for arr in pred_arrays:
-        set_objective(model, charge, discharge, times, arr, dt_vec)
-        update_initial_charge(model, init_soe_constr, soe, current_soe)
-        model.optimize()
-        if model.Status != 2:  # gp.GRB.OPTIMAL
-            raise RuntimeError("MPC step did not reach optimal solution")
-        current_soe = float(soe.X[1])
-        charge_decisions.append(float(charge.X[0]))
-        discharge_decisions.append(float(discharge.X[0]))
+def _create_transformers(cfg, summ, feature_df, hourly_feature_dfs, lf: bool = False):
+    tt_name = str(cfg.get("target_transform", "NoneTransform"))
+    transformer_cls = name_to_transformer(tt_name)
+    subset_data_size = summ["subset_data_size"]
+    test_size = summ["omitted_test_size"]
+    if lf:
+        _hourly_feature_dfs = _lf_slice_features(
+            hourly_feature_dfs, subset_data_size=subset_data_size, test_size=test_size
+        )
+        train_y_series, _, train_fut_series, _ = _prep_data_lf(
+            transformer_cls, feature_df, _hourly_feature_dfs
+        )
+    else:
+        model_name = model_name_to_enum(summ["model_class"])
+        _feature_df = _hf_slice_feature_df(
+            model_name, feature_df, subset_data_size, test_size
+        )
+        train_y_series, _, train_fut_series, _ = _prep_data(
+            transformer_cls, _feature_df
+        )
 
-    out_df = pd.DataFrame(
-        {
-            "charge_mw": charge_decisions,
-            "discharge_mw": discharge_decisions,
-        },
-        index=prices_df.index[:limit],
-    )
-    return out_df
+    # Normalize target (fit on transformed train segment only)
+    y_transformer = Scaler(global_fit=True)
+    y_transformer.fit(train_y_series)
+    feat_transformer = Scaler(global_fit=True)
+    feat_transformer.fit(train_fut_series)
+
+    return y_transformer, feat_transformer
+
+
+def _generate_pjm_da_preds(feature_df: pd.DataFrame) -> pd.Series:
+    """Generate deterministic arbitrage predictions for the test set."""
+    prices_df = feature_df[["lmp_da"]].copy()
+
+    preds: list[TimeSeries] = []
+    for i in range(0, len(prices_df) - 24):
+        da_prices_pred = prices_df["lmp_da"].iloc[i + 1 : i + 1 + 12 * 24 : 12]
+        preds.append(TimeSeries.from_series(da_prices_pred))
+
+    return preds
 
 
 def evaluate_hf_lf_pair(
-    feature_df: pd.DataFrame,
     pnode_id: int,
-    hf_model_class: str,
-    hf_run_id: str,
-    lf_model_class: str,
-    lf_run_id: str,
-) -> Dict[str, Dict[str, float]]:
-    """Evaluate a HF forecaster and LF forecaster together.
-
-    - Loads models from `forecasting/outputs/<pnode>/<ModelClass>/<sweep__run>/model.pkl(.ckpt)` by run id.
-    - Generates predictions for HF (5-min horizon 24, rolling) and LF (hourly 24) over the validation window.
-    - Calculates validation metrics for both, runs short- and long-horizon performance.
-    - Runs joint optimization using HF for first K steps (K=3,6,9) and LF thereafter.
-    - Also computes deterministic arbitrage baseline.
-
-    Returns a dict of metric blocks.
-    """
-    # Build target and covariates TimeSeries (HF uses 5-min data; LF consumes hourly preds later)
-    target_ts, fut_ts = _build_series_from_feature_df(feature_df)
+    hf_run_path: str,
+    lf_run_path: str | None,
+    test_size: int | None = None,
+    pjm_da_preds: bool = False,
+):
+    t1 = time.perf_counter()
+    feature_df = build_series_for_node(pnode_id)
+    if pjm_da_preds:
+        lf_run_path = None
+    else:
+        assert lf_run_path is not None, (
+            "lf_run_path must be provided if pjm_da_preds is False"
+        )
+    
+    hf_model, hf_cfg, hf_summ, hf_run = _load_model_from_outputs(hf_run_path)
+    if test_size is None:
+        test_size = hf_summ["omitted_test_size"] // 12  # convert to hourly
 
     # Load models
-    hf_model = _load_model_from_outputs(pnode_id, hf_model_class, hf_run_id)
-    lf_model = _load_model_from_outputs(pnode_id, lf_model_class, lf_run_id)
+    if not pjm_da_preds:
+        lf_model, lf_cfg, lf_summ, lf_run = _load_model_from_outputs(lf_run_path)
+        feature_df["lmp_lf_avg"] = (
+            feature_df["lmp_rt"].rolling(window=13, center=True, min_periods=1).mean()
+        )
+        # get scalars that would have been used during training
+        hourly_feature_dfs = [feature_df.iloc[i::12].copy() for i in range(12)]
+        lf_scalar_y, lf_scalar_feat = _create_transformers(
+            lf_cfg, lf_summ, feature_df, hourly_feature_dfs, lf=True
+        )
+        # Slice test set
+        for i in range(len(hourly_feature_dfs)):
+            hourly_feature_dfs[i] = hourly_feature_dfs[i][
+                : len(hourly_feature_dfs[11])
+            ]  # align lengths
+        for i in range(len(hourly_feature_dfs)):
+            hourly_feature_dfs[i] = hourly_feature_dfs[i][-test_size:]
 
-    # Generate HF predictions: rolling origins, horizon 24
+    hf_scalar_y, hf_scalar_feat = _create_transformers(
+        hf_cfg, hf_summ, feature_df, None
+    )
+
+    feature_df = feature_df[-(test_size * 12) :]
+
+    if not pjm_da_preds:
+        # get lf series
+        lf_tt_name = str(lf_cfg.get("target_transform", "NoneTransform"))
+        lf_transformer_cls = name_to_transformer(lf_tt_name)
+        _, lf_y_series, _, lf_fut_series = _prep_data_lf(
+            lf_transformer_cls, feature_df, hourly_feature_dfs, train_size=0.0
+        )
+        lf_y_s = lf_scalar_y.transform(lf_y_series)
+        lf_fut_s = lf_scalar_feat.transform(lf_fut_series)
+        lf_past_s = None
+        if lf_cfg.get("include_delayed_covariates", False):
+            delay = lf_model.output_chunk_length + lf_cfg.get(
+                "covariate_delay_steps", 0
+            )
+            lf_past_s = []
+            for i in range(len(lf_fut_s)):
+                lf_past_s.append(lf_fut_s[i].shift(-delay))
+
+    # get hf series
+    hf_tt_name = str(hf_cfg.get("target_transform", "NoneTransform"))
+    hf_transformer_cls = name_to_transformer(hf_tt_name)
+    _, hf_y_series, _, hf_fut_series = _prep_data(
+        hf_transformer_cls, feature_df, train_size=0.0
+    )
+    hf_y_s = hf_scalar_y.transform(hf_y_series)
+    hf_fut_s = hf_scalar_feat.transform(hf_fut_series)
+    hf_past_s = None
+    if hf_cfg.get("include_delayed_covariates", False):
+        delay = hf_model.output_chunk_length + hf_cfg.get("covariate_delay_steps", 0)
+        hf_past_s = hf_fut_s.shift(-delay)
+
+    # get preds
+    if not pjm_da_preds:
+        lf_raw_preds = predict_lf_model(
+            lf_model, lf_y_s, lf_fut_s, lf_past_s, lf_cfg, None
+        )
+    hf_raw_preds = predict_hf_model(hf_model, hf_y_s, hf_fut_s, hf_past_s, hf_cfg, None)
+
+    # Inverse transform hf preds
+    t0 = time.perf_counter()
+    hf_actual_val = hf_transformer_cls.inverse_transform_darts_timeseries(hf_y_series)
     hf_preds: list[TimeSeries] = []
-    for i in range(50, len(val_y) - 24):
-        hf_preds.append(hf_model.predict(n=24, series=val_y[:i]))
+    for pred in hf_raw_preds:
+        inv_norm = hf_scalar_y.inverse_transform(pred)
+        hf_preds.append(hf_transformer_cls.inverse_transform_darts_timeseries(inv_norm))
+    time_taken = time.perf_counter() - t0
+    print(f"Inverse transforming hf predictions for model took {time_taken:.3f}s")
 
-    # Generate LF predictions: hourly horizon 24, reusing same origins
-    lf_preds: list[TimeSeries] = []
-    for i in range(50, len(val_y) - 24):
-        lf_preds.append(lf_model.predict(n=24, series=val_y[:i]))
+    # Inverse transform lf preds
+    if not pjm_da_preds:
+        t0 = time.perf_counter()
+        lf_actual_val = feature_df["lmp_lf_avg"].loc[
+            lf_raw_preds[0].time_index[0] : lf_raw_preds[-1].time_index[-1]
+        ]
+        lf_actual_val = TimeSeries.from_series(lf_actual_val)
+        lmp_series = feature_df["lmp_rt"].loc[
+            lf_raw_preds[0].time_index[0] - pd.Timedelta(minutes=5) : lf_raw_preds[
+                -1
+            ].time_index[0]
+        ]
+        lf_preds: list[TimeSeries] = []
+        for pred in lf_raw_preds:
+            inv_norm = lf_scalar_y.inverse_transform(pred)
+            lf_preds.append(
+                lf_transformer_cls.inverse_transform_darts_timeseries(inv_norm)
+            )
+        time_taken = time.perf_counter() - t0
+        print(f"Inverse transforming hf predictions for model took {time_taken:.3f}s")
 
-    # Build preds_df aligned to validation timestamps from HF preds
-    # Use the same helper logic as in train: actual as validation target values
-    all_index = pd.Index(val_y.time_index)
-    for pred in hf_preds:
-        all_index = all_index.union(pd.Index(pred.time_index))
-    all_index = all_index.sort_values()
-    preds_df = pd.DataFrame(index=all_index)
-    preds_df["actual"] = np.nan
-    preds_df.loc[val_y.time_index, "actual"] = val_y.values().reshape(-1)
-    for h in range(1, 25):
-        preds_df[f"h_{h}"] = np.nan
-    for pred in hf_preds:
-        for h, ts in enumerate(pred.time_index, start=1):
-            col = f"h_{h}"
-            if pd.isna(preds_df.at[ts, col]):
-                preds_df.at[ts, col] = pred.values()[h - 1]
+    out_dir = (
+        Path("forecasting/outputs")
+        / "tests"
+        / str(pnode_id)
+        / f"{hf_run.name}and{lf_run.name}"
+        if not pjm_da_preds
+        else Path("forecasting/outputs")
+        / "tests"
+        / str(pnode_id)
+        / f"{hf_run.name}andPJMDa"
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Metrics for HF
-    hf_metrics = calculate_metrics(preds_df)
-    # Short-horizon performance (HF-only)
-    sh_combined, sh_vals = short_horizon_pred_performance(
-        hf_preds, preds_df, granular_metrics=False
+    _, joint_opt_metrics = short_and_long_pred_performance(
+        hf_preds,
+        lf_preds if not pjm_da_preds else _generate_pjm_da_preds(feature_df),
+        feature_df,
     )
 
-    # Long-horizon performance (LF-only) uses actual series for first K steps internally
-    # Build lmp_series over same validation window
-    lmp_series = pd.Series(
-        val_y.values().reshape(-1), index=val_y.time_index, name="lmp"
+    _ind_test_logging(
+        hf_preds,
+        hf_actual_val,
+        test_size * 12,
+        out_dir,
+        lf=False,
     )
-    lh_combined, lh_vals = long_horizon_pred_performance(lf_preds, lmp_series)
 
-    # Joint optimization using both
-    # Use actual prices frame aligned to HF origins span
-    start = hf_preds[0].time_index[0] - pd.Timedelta(minutes=5)
-    end = hf_preds[-1].time_index[0] - pd.Timedelta(minutes=5)
-    prices_df = pd.DataFrame({"lmp": lmp_series.loc[start:end]})
-    joint_vals: Dict[str, float] = {}
-    for K in [3, 6, 9]:
-        joint_df = _joint_optimization_with_hf_lf(
-            hf_preds, lf_preds, prices_df, hf_horizon=K
-        )
-        # Compare to deterministic arbitrage over same window
-        perf_df, _ = deterministic_arbitrage_opt(
-            prices_df=prices_df, require_equivalent_soe=True
-        )
-        perf_val = np.sum(
-            (perf_df["charge_mw"] - perf_df["discharge_mw"])
-            * 5.0
-            / 60.0
-            * prices_df["lmp"]
-        )
-        joint_val = np.sum(
-            (joint_df["charge_mw"] - joint_df["discharge_mw"])
-            * 5.0
-            / 60.0
-            * prices_df["lmp"]
-        )
-        joint_vals[f"joint_pct_perf_hor_{K}"] = (
-            (joint_val / perf_val) if perf_val != 0 else float("nan")
+    if not pjm_da_preds:
+        _ind_test_logging(
+            lf_preds,
+            lf_actual_val,
+            test_size * 12,
+            out_dir,
+            lf=True,
+            lmp_series=lmp_series,
         )
 
-    return {
-        "hf_metrics": hf_metrics,
-        "short_horizon": sh_vals,
-        "long_horizon": lh_vals,
-        "joint": joint_vals,
-    }
+    time_taken = time.perf_counter() - t1
+    joint_opt_metrics["total_time_taken_s"] = time_taken
+    joint_opt_metrics["eval_start"] = feature_df.index[0].strftime("%Y-%m-%d %H:%M:%S")
+    joint_opt_metrics["eval_end"] = feature_df.index[-1].strftime("%Y-%m-%d %H:%M:%S")
+    joint_opt_metrics["Int_test_size"] = test_size
+
+    metrics_path = out_dir / "joint_opt_metrics.json"
+    with open(metrics_path, "w") as f:
+        json.dump(joint_opt_metrics, f, indent=2)
+
+    return joint_opt_metrics, hf_run.name, lf_run.name if not pjm_da_preds else "PJMDa"
+
+
+if __name__ == "__main__":
+    pnode_id = 2156113094
+    hf_run_path = "watt-our/thesis-hf-forecasters/tks540ei"
+    lf_run_path = "watt-our/thesis-lf-forecasters/tbk5xmvg"
+    evaluate_hf_lf_pair(pnode_id, hf_run_path, None, test_size=500, pjm_da_preds=True)

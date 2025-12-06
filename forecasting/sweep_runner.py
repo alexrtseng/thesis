@@ -16,15 +16,7 @@ from .model_zoo import ModelName, make_registry
 DEV = os.getenv("DEV", "1") == "1"
 
 
-def run_sweep_for_node(
-    model_name: ModelName,
-    pnode_id: int,
-    feature_df: pd.DataFrame,
-    project: str,
-    count: int = 50,
-    subset_data_size: float = 1.0,
-    test_size: float = 51840,  # about 6 months of 5-minute data
-):
+def _hf_slice_feature_df(model_name, feature_df, subset_data_size, test_size):
     if model_name == ModelName.KALMANFORECASTER:
         subset_data_size = min(0.2, subset_data_size)
     elif model_name == ModelName.AUTO_THETA:
@@ -36,11 +28,24 @@ def run_sweep_for_node(
     total = len(feature_df) - test_size
     keep = max(1, int(total * subset_data_size))
     df = feature_df[-(keep + test_size) : -test_size].copy()
+
+    return df
+
+
+def run_sweep_for_node(
+    model_name: ModelName,
+    pnode_id: int,
+    feature_df: pd.DataFrame,
+    project: str,
+    count: int = 50,
+    subset_data_size: float = 1.0,
+    test_size: float = 51840,  # about 6 months of 5-minute data
+):
+    df = _hf_slice_feature_df(model_name, feature_df, subset_data_size, test_size)
     reg = make_registry()
     assert model_name in reg, f"Unknown model: {model_name}"
     spec = reg[model_name]
     count = min(count, spec.max_needed_runs)
-
     sweep_cfg = spec.sweep_config()
     wandb.login(key=WANDB_API_KEY)
     sweep_id = wandb.sweep(sweep=sweep_cfg, project=project)
@@ -60,16 +65,7 @@ def run_sweep_for_node(
     wandb.agent(sweep_id, function=_fn, project=project, count=count)
 
 
-def run_lf_sweep_for_node(
-    model_name: ModelName,
-    pnode_id: int,
-    feature_df: pd.DataFrame,
-    hourly_feature_dfs: list[pd.DataFrame],
-    project: str,
-    count: int = 50,
-    subset_data_size: float = 1.0,
-    test_size: float = 4320,  # about 6 months of hourly data
-):
+def _lf_slice_features(hourly_feature_dfs, subset_data_size, test_size):
     _hourly_feature_dfs = hourly_feature_dfs.copy()
     for i in range(len(_hourly_feature_dfs)):
         _hourly_feature_dfs[i] = _hourly_feature_dfs[i][
@@ -81,6 +77,22 @@ def run_lf_sweep_for_node(
         _hourly_feature_dfs[i] = _hourly_feature_dfs[i][
             -(keep + test_size) : -test_size
         ]
+    return _hourly_feature_dfs
+
+
+def run_lf_sweep_for_node(
+    model_name: ModelName,
+    pnode_id: int,
+    feature_df: pd.DataFrame,
+    hourly_feature_dfs: list[pd.DataFrame],
+    project: str,
+    count: int = 50,
+    subset_data_size: float = 1.0,
+    test_size: float = 4320,  # about 6 months of hourly data
+):
+    _hourly_feature_dfs = _lf_slice_features(
+        hourly_feature_dfs, subset_data_size, test_size
+    )
     reg = make_registry()
     assert model_name in reg, f"Unknown model: {model_name}"
     spec = reg[model_name]

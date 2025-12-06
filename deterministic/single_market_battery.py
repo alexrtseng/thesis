@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 
 import gurobipy as gp
@@ -21,115 +22,45 @@ DEFAULT_BATTERY = BatteryParams()
 
 def txbx(
     prices_df: pd.DataFrame,
-    x: int,
     battery: BatteryParams = DEFAULT_BATTERY,
-    verbose: bool = False,
 ):
-    """Heuristic schedule: charge at lowest x hours, discharge at highest x hours.
-
-    Requirements:
-    - max_charge_mw must equal max_discharge_mw
-    - max_discharge_mw * x must be less than capacity_mwh
-
-    Behavior:
-    - Uses per-interval durations implied by the DatetimeIndex to find a set of
-      disjoint intervals totaling x hours for charging (lowest prices) and x hours
-      for discharging (highest prices). The final interval on each side may be
-      partially allocated.
-    - Produces a DataFrame with columns charge_mw and discharge_mw (MW), aligned to
-      the input index; the last timestamp has zero duration and thus contributes
-      nothing to revenue.
-    - Returns (decisions_df, revenue_$).
-    """
-    # Input validation
-    if not isinstance(prices_df.index, pd.DatetimeIndex):
-        raise ValueError("prices_df must be indexed by a DatetimeIndex")
-    if "lmp" not in prices_df.columns:
-        raise ValueError("prices_df must contain an 'lmp' column")
-    if not isinstance(x, int) or x <= 0:
-        raise ValueError("x must be a positive integer (hours)")
-
-    prices_df = prices_df.sort_index()
-
-    # Battery checks
-    if float(battery.max_charge_mw) != float(battery.max_discharge_mw):
-        raise ValueError("max_charge_mw must equal max_discharge_mw for txbx()")
-    if float(battery.max_discharge_mw) * float(x) > float(battery.capacity_mwh):
-        raise ValueError("max_discharge_mw * x must be less than capacity_mwh")
-
-    # Build interval table (ignore the last row which has no forward interval)
-    times = prices_df.index
-    if len(times) < 2:
-        raise ValueError("Need at least two timestamps to define time intervals")
-    dt_hours = (times[1:] - times[:-1]).to_numpy(dtype="timedelta64[s]").astype(
-        float
-    ) / 3600.0
-    # Construct per-interval DataFrame aligned to the starting timestamps
-    intervals = pd.DataFrame(
-        {
-            "price": prices_df["lmp"].iloc[:-1].astype(float).values,
-            "dt_hours": dt_hours,
-        },
-        index=times[:-1],
+    assert "lmp_rt" in prices_df.columns, "prices_df must contain 'lmp_rt' column"
+    assert "lmp_da" in prices_df.columns, "prices_df must contain 'lmp_da' column"
+    X = math.floor(
+        battery.capacity_mwh / max(battery.max_discharge_mw, battery.max_charge_mw)
     )
+    print(f"txbx heuristic with X={X} based on battery parameters")
+    if X <= 0:
+        raise ValueError("X must be a positive integer")
+    if X > 12:  # Arbitrary upper limit for practicality
+        raise ValueError("X is too large; must be <= 12")
 
-    total_hours = float(intervals["dt_hours"].sum())
-    if total_hours < 2.0 * float(x):
-        raise ValueError(
-            "Insufficient data length: need at least 2*x hours of intervals to allocate charge and discharge disjointly."
+    # Prepare decisions
+    dec = pd.DataFrame(index=prices_df.index)
+    dec["lmp"] = prices_df["lmp_rt"]
+    dec["lmp_da"] = prices_df["lmp_da"]
+    dec["charge_mw"] = 0.0
+    dec["discharge_mw"] = 0.0
+
+    # Group by day and pick top/bottom X hours
+    for _, grp in dec.groupby(dec.index.normalize()):
+        five_minute_intervals = grp.index
+        if len(five_minute_intervals) == 0:
+            continue
+        k = min(X * 12, len(five_minute_intervals) // 2)
+        # Bottom X for charging
+        bottom_idx = grp.nsmallest(k, columns="lmp_da").index
+        top_idx = grp.nlargest(k, columns="lmp_da").index
+        dec.loc[bottom_idx, "charge_mw"] = battery.max_charge_mw / battery.in_efficiency
+        dec.loc[top_idx, "discharge_mw"] = (
+            battery.max_discharge_mw * battery.out_efficiency
         )
 
-    max_mw = float(battery.max_charge_mw)
-
-    # Helper: greedy selection to accumulate up to x hours with possible partial last interval
-    def select_intervals(
-        df: pd.DataFrame, ascending: bool, hours: float
-    ) -> pd.DataFrame:
-        cand = df.sort_values("price", ascending=ascending).copy()
-        cand["alloc"] = 0.0
-        remaining = float(hours)
-        for idx, row in cand.iterrows():
-            if remaining <= 0:
-                break
-            h = float(row["dt_hours"]) if float(row["dt_hours"]) > 0 else 0.0
-            if h <= 0:
-                continue
-            take = min(h, remaining)
-            cand.at[idx, "alloc"] = take / h  # fraction in [0,1]
-            remaining -= take
-        # Keep only rows with nonzero allocation
-        return cand[cand["alloc"] > 0].copy()
-
-    # 1) Choose charge intervals (lowest prices)
-    charge_sel = select_intervals(intervals, ascending=True, hours=float(x))
-    used_index = set(charge_sel.index)
-
-    # 2) Choose discharge intervals (highest prices) from remaining rows
-    discharge_pool = intervals.loc[~intervals.index.isin(used_index)]
-    discharge_sel = select_intervals(discharge_pool, ascending=False, hours=float(x))
-
-    # Construct decisions aligned to full index
-    decisions = pd.DataFrame(
-        {"charge_mw": 0.0, "discharge_mw": 0.0}, index=prices_df.index
+    # Revenue (hourly): (discharge - charge) * price * 1h
+    revenue = float(
+        ((dec["discharge_mw"] - dec["charge_mw"]) * dec["lmp"] * (5.0 / 60.0)).sum()
     )
-    # Apply allocations (scale MW by fraction to handle partial intervals)
-    for idx, row in charge_sel.iterrows():
-        frac = float(row["alloc"])  # fraction of that interval
-        decisions.at[idx, "charge_mw"] = max_mw * frac
-        decisions.at[idx, "discharge_mw"] = 0.0
-    for idx, row in discharge_sel.iterrows():
-        frac = float(row["alloc"])  # fraction of that interval
-        decisions.at[idx, "discharge_mw"] = max_mw * frac
-        # Ensure disjointness already enforced; no need to zero charge here
-
-    # Compute revenue using forward interval dt
-    # Align dt_hours back to the full index (last timestamp gets 0)
-    dt_full = pd.Series(0.0, index=prices_df.index, dtype=float)
-    dt_full.iloc[:-1] = intervals["dt_hours"].values
-    net_mw = (decisions["discharge_mw"] - decisions["charge_mw"]).astype(float)
-    revenue = (prices_df["lmp"].astype(float) * net_mw * dt_full).sum()
-
-    return decisions, float(revenue)
+    return dec, revenue
 
 
 def deterministic_arbitrage_opt(
@@ -221,7 +152,7 @@ def deterministic_arbitrage_opt(
         raise RuntimeError("Optimization did not find optimal solution")
     else:
         result_df = pd.DataFrame(
-            {                
+            {
                 "state_of_energy_mwh": [v.X for v in soe],
                 "charge_mw": [v.X for v in charge] + [0.0],
                 "discharge_mw": [v.X for v in discharge] + [0.0],
