@@ -89,6 +89,8 @@ def _ind_test_logging(
     else:
         out_dir = _out_dir / "hf"
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     ## Plotting is too redundant for the combo tests
     # plot_opt_vs_perf_samples(
     #     opt_results=opt_results,  # (combined_decisions_df, pct_dict)
