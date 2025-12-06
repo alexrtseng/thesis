@@ -286,23 +286,23 @@ def evaluate_hf_lf_pair(
         feature_df,
     )
 
-    _ind_test_logging(
-        hf_preds,
-        hf_actual_val,
-        test_size * 12,
-        out_dir,
-        lf=False,
-    )
+    # _ind_test_logging(
+    #     hf_preds,
+    #     hf_actual_val,
+    #     test_size * 12,
+    #     out_dir,
+    #     lf=False,
+    # )
 
-    if not pjm_da_preds:
-        _ind_test_logging(
-            lf_preds,
-            lf_actual_val,
-            test_size * 12,
-            out_dir,
-            lf=True,
-            lmp_series=lmp_series,
-        )
+    # if not pjm_da_preds:
+    #     _ind_test_logging(
+    #         lf_preds,
+    #         lf_actual_val,
+    #         test_size * 12,
+    #         out_dir,
+    #         lf=True,
+    #         lmp_series=lmp_series,
+    #     )
 
     time_taken = time.perf_counter() - t1
     joint_opt_metrics["total_time_taken_s"] = time_taken
