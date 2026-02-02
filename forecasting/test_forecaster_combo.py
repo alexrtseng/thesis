@@ -22,6 +22,7 @@ from forecasting.metrics import (
 from forecasting.model_zoo import model_name_to_class, model_name_to_enum
 from forecasting.sweep_runner import _hf_slice_feature_df, _lf_slice_features
 from forecasting.train import (
+    WANDB_API_KEY,
     _get_preds_df,
     _prep_data,
     _prep_data_lf,
@@ -40,7 +41,7 @@ WANDB_ENTITY = "watt-our"
 
 
 def _load_model_from_outputs(run_path: str):
-    api = wandb.Api()
+    api = wandb.Api(key=WANDB_API_KEY)
     run = api.run(run_path)
     cfg = run.config
     summ = run.summary
