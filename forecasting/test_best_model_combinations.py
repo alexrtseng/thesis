@@ -65,7 +65,7 @@ def _short_run_id(run_path: str) -> str:
 
 def _eval_one_ensemble(args: tuple) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
-
+    wandb.login(key=WANDB_API_KEY)
     (
         pnode_id,
         hf_sel,
@@ -107,8 +107,6 @@ def random_test_hf_lf_ensemble_combinations(
     num_workers: int = 4,
     seed: int | None = None,
 ) -> pd.DataFrame:
-    wandb.login(key=WANDB_API_KEY)
-
     """Randomly sample HF/LF ensembles and evaluate via two-stage stochastic MPC.
 
     Returns a DataFrame with columns:
