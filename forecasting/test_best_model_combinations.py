@@ -1,6 +1,5 @@
 import os
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from forecasting.test_forecaster_combo import evaluate_hf_lf_pair_ensemble
+
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
     "watt-our/thesis-hf-forecasters/tks540ei",  # transformer
@@ -62,22 +62,14 @@ def _short_run_id(run_path: str) -> str:
     return tail[-8:]
 
 
-def _eval_one_ensemble(args: tuple) -> dict:
+def _eval_one_ensemble(
+    pnode_id,
+    hf_sel,
+    lf_sel,
+    test_size,
+    hf_horizon,
+) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
-    time.sleep(np.random.uniform(1, 10))
-    (
-        pnode_id,
-        hf_sel,
-        lf_sel,
-        test_size,
-        hf_horizon,
-        _wandb_key,
-    ) = args
-
-    key = os.getenv("WANDB_API_KEY")
-    if not key:
-        os.environ["WANDB_API_KEY"] = _wandb_key
-
     metrics, _two_stage_df = evaluate_hf_lf_pair_ensemble(
         pnode_id=pnode_id,
         hf_run_paths=hf_sel,
@@ -108,7 +100,6 @@ def random_test_hf_lf_ensemble_combinations(
     max_lf: int = 3,
     test_size: int = 300,
     hf_horizon: int = 6,
-    num_workers: int = 4,
     seed: int | None = None,
 ) -> pd.DataFrame:
     """Randomly sample HF/LF ensembles and evaluate via two-stage stochastic MPC.
@@ -136,40 +127,22 @@ def random_test_hf_lf_ensemble_combinations(
 
     rng = np.random.default_rng(seed)
 
-    # Pre-sample tasks in the parent process for reproducibility.
-    if WANDB_API_KEY is None:
-        raise ValueError("WANDB_API_KEY must be set")
-    tasks: list[tuple] = []
+    rows: list[dict] = []
+    num_successful = 0
+    num_failed = 0
     for _ in range(num_evals):
         n_hf = int(rng.integers(min_hf, max_hf + 1))
         n_lf = int(rng.integers(min_lf, max_lf + 1))
         hf_sel = rng.choice(hf_model_run_paths, size=n_hf, replace=False).tolist()
         lf_sel = rng.choice(lf_model_run_paths, size=n_lf, replace=False).tolist()
-        tasks.append((pnode_id, hf_sel, lf_sel, test_size, hf_horizon, WANDB_API_KEY))
-
-    rows: list[dict] = []
-    num_successful = 0
-    num_failed = 0
-
-    num_workers = max(1, min(int(num_workers), len(tasks)))
-    if num_workers == 1:
-        for t in tasks:
-            try:
-                rows.append(_eval_one_ensemble(t))
-                num_successful += 1
-            except Exception as e:
-                num_failed += 1
-                print(f"Error in evaluation: {e}")
-    else:
-        with ProcessPoolExecutor(max_workers=num_workers) as ex:
-            futures = {ex.submit(_eval_one_ensemble, t): t for t in tasks}
-            for fut in as_completed(futures):
-                try:
-                    rows.append(fut.result())
-                    num_successful += 1
-                except Exception as e:
-                    num_failed += 1
-                    print(f"Error in evaluation: {e}")
+        try:
+            rows.append(
+                _eval_one_ensemble(pnode_id, hf_sel, lf_sel, test_size, hf_horizon)
+            )
+            num_successful += 1
+        except Exception as e:
+            num_failed += 1
+            print(f"Error in evaluation: {e}")
 
     print(f"Successful iterations: {num_successful}, Failed iterations: {num_failed}")
     return pd.DataFrame(rows)
@@ -184,7 +157,6 @@ def test_and_write_ensemble_combos(
     max_lf,
     test_size,
     hf_horizon,
-    num_workers,
     seed,
     run_name: str = None,
 ):
@@ -200,7 +172,6 @@ def test_and_write_ensemble_combos(
         max_lf=max_lf,
         test_size=test_size,  # should be 4320 or None for full runs
         hf_horizon=hf_horizon,
-        num_workers=num_workers,
         seed=seed,
     )
     elapsed = time.perf_counter() - start
@@ -229,7 +200,6 @@ def test_and_write_ensemble_combos(
         f.write(f"max_lf: {max_lf}\n")
         f.write(f"test_size: {test_size}\n")
         f.write(f"hf_horizon: {hf_horizon}\n")
-        f.write(f"num_workers: {num_workers}\n")
     print(f"Wrote results to {out_path}")
     print(f"Total runtime (s): {elapsed:.2f}")
     print(df.sort_values("pct_perf", ascending=False).head(10))
@@ -244,7 +214,6 @@ if __name__ == "__main__":
     max_lf = 3
     test_size = 800  # should be 4320 or None for full runs
     hf_horizon = 6
-    num_workers = 5
     seed = None
 
     test_and_write_ensemble_combos(
@@ -256,6 +225,5 @@ if __name__ == "__main__":
         max_lf=max_lf,
         test_size=test_size,
         hf_horizon=hf_horizon,
-        num_workers=num_workers,
         seed=seed,
     )

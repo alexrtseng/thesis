@@ -35,7 +35,6 @@ export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
 
 # experiment knobs (can override with --export)
 export PNODE_ID=${PNODE_ID:-2156113094}
-export NUM_WORKERS=${NUM_WORKERS:-20}
 export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
 export NUM_EVALS=${NUM_EVALS:-5}
@@ -61,7 +60,6 @@ min_lf = 1
 max_lf = 10
 test_size = None
 hf_horizon = int(os.environ.get("HF_HORIZON", 6))
-num_workers = int(os.environ.get("NUM_WORKERS", 20))
 seed = None
 run_name = os.environ.get("RUN_NAME", None)
 
@@ -74,7 +72,6 @@ test_and_write_ensemble_combos(
     max_lf=max_lf,
     test_size=test_size,
     hf_horizon=hf_horizon,
-    num_workers=num_workers,
     seed=seed,
     run_name=run_name,
 )
