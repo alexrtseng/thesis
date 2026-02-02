@@ -187,6 +187,7 @@ def test_and_write_ensemble_combos(
     seed,
     run_name: str = None,
 ):
+    start = time.perf_counter()
     df = random_test_hf_lf_ensemble_combinations(
         pnode_id=pnode_id,
         hf_model_run_paths=TEST_HF_MODEL_RUNS,
@@ -235,7 +236,6 @@ def test_and_write_ensemble_combos(
 
 if __name__ == "__main__":
     pnode_id = 2156113094
-    start = time.perf_counter()
     num_evals = 5
     min_hf = 1
     max_hf = 3

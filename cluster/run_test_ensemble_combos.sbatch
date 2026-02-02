@@ -54,7 +54,6 @@ import os
 from forecasting.test_best_model_combinations import test_and_write_ensemble_combos
 
 pnode_id = 2156113094
-start = time.perf_counter()
 num_evals = int(os.environ.get("NUM_EVALS", 5))
 min_hf = 1
 max_hf = 10
