@@ -540,14 +540,6 @@ def calculate_residual_matrix(pred_df: pd.DataFrame):
 
 
 def plot_residuals_and_save(pred_df: pd.DataFrame, output_dir: Path) -> Path:
-    """Compute residual matrix, plot histograms for select horizons, and a 3D plot.
-
-    - Horizons plotted: 1, 3, 6, 9, 12, 24.
-    - 3D plot: horizon (1..24) x bin range x frequency.
-    - Saves PNG images and CSV of the residual matrix into `output_dir/residuals/`.
-
-    Returns the path to the created residuals directory.
-    """
     if not isinstance(output_dir, Path):
         output_dir = Path(output_dir)
     residuals_dir = output_dir / "residuals"

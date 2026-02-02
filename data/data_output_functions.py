@@ -238,6 +238,7 @@ if __name__ == "__main__":
         print(enriched.columns)
 
         enriched["lmp_lf_avg"] = enriched["lmp_rt"].rolling(window=13, center=True, min_periods=1).mean()
+        enriched.head(10).to_csv("example.csv")
         # create 12 hourly-offset series from 5-minute data (preserves original timestamps)
         hourly_series_list = [enriched["lmp_lf_avg"].iloc[i::12].copy() for i in range(12)]
         print(f"Created {len(hourly_series_list)} hourly-offset series for LF average LMP.")
