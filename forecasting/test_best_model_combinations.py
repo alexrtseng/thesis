@@ -72,11 +72,12 @@ def _eval_one_ensemble(args: tuple) -> dict:
         lf_sel,
         test_size,
         hf_horizon,
+        _wandb_key,
     ) = args
 
     key = os.getenv("WANDB_API_KEY")
     if not key:
-        raise RuntimeError("WANDB_API_KEY is not set in worker environment")
+        os.environ["WANDB_API_KEY"] = _wandb_key
 
     metrics, _two_stage_df = evaluate_hf_lf_pair_ensemble(
         pnode_id=pnode_id,
@@ -137,13 +138,15 @@ def random_test_hf_lf_ensemble_combinations(
     rng = np.random.default_rng(seed)
 
     # Pre-sample tasks in the parent process for reproducibility.
+    if WANDB_API_KEY is None:
+        raise ValueError("WANDB_API_KEY must be set")
     tasks: list[tuple] = []
     for _ in range(num_evals):
         n_hf = int(rng.integers(min_hf, max_hf + 1))
         n_lf = int(rng.integers(min_lf, max_lf + 1))
         hf_sel = rng.choice(hf_model_run_paths, size=n_hf, replace=False).tolist()
         lf_sel = rng.choice(lf_model_run_paths, size=n_lf, replace=False).tolist()
-        tasks.append((pnode_id, hf_sel, lf_sel, test_size, hf_horizon))
+        tasks.append((pnode_id, hf_sel, lf_sel, test_size, hf_horizon, WANDB_API_KEY))
 
     rows: list[dict] = []
     num_successful = 0
