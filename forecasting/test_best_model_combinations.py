@@ -119,6 +119,7 @@ def random_test_hf_lf_ensemble_combinations(
     - pred_end
     """
     wandb.login(key=WANDB_API_KEY)
+    print(wandb.api.api_key)
     if num_evals <= 0:
         raise ValueError("num_evals must be positive")
     if min_hf <= 0 or min_lf <= 0:
