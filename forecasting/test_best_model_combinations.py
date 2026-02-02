@@ -65,7 +65,6 @@ def _short_run_id(run_path: str) -> str:
 
 def _eval_one_ensemble(args: tuple) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
-    wandb.login(key=WANDB_API_KEY)
     (
         pnode_id,
         hf_sel,
@@ -119,7 +118,7 @@ def random_test_hf_lf_ensemble_combinations(
     - pred_start
     - pred_end
     """
-
+    wandb.login(key=WANDB_API_KEY)
     if num_evals <= 0:
         raise ValueError("num_evals must be positive")
     if min_hf <= 0 or min_lf <= 0:
