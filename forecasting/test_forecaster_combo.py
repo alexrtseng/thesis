@@ -39,20 +39,28 @@ from stochastic.warm_start_arb import (
 
 WANDB_ENTITY = "watt-our"
 
+_model_dict = {}
+
 
 def _load_model_from_outputs(run_path: str):
-    api = wandb.Api(key=WANDB_API_KEY)
-    run = api.run(run_path)
-    cfg = run.config
-    summ = run.summary
-    model_class = summ["model_class"]
-    ModelClass = model_name_to_class(model_class)
+    # Cache loaded models
 
-    model_dir = Path(summ["save_dir"])
-    model_file = model_dir / "model.pkl"
-    print(f"Loading model from {model_file}")
-    # Darts models support classmethod `load`
-    return ModelClass.load(str(model_file)), cfg, summ, run
+    if run_path not in _model_dict:
+        api = wandb.Api(api_key=WANDB_API_KEY)
+        run = api.run(run_path)
+        cfg = run.config
+        summ = run.summary
+        model_class = summ["model_class"]
+        ModelClass = model_name_to_class(model_class)
+
+        model_dir = Path(summ["save_dir"])
+        model_file = model_dir / "model.pkl"
+        print(f"Loading model from {model_file}")
+        # Darts models support classmethod `load`
+        _model_dict[run_path] = ModelClass.load(str(model_file)), cfg, summ, run
+    else:
+        print(f"Using cached model for {run_path}")
+    return _model_dict[run_path]
 
 
 def _ind_test_logging(

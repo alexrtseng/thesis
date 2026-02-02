@@ -1,3 +1,4 @@
+import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
@@ -6,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import wandb
 from forecasting.test_forecaster_combo import evaluate_hf_lf_pair_ensemble
 from forecasting.train import WANDB_API_KEY
 
@@ -71,7 +71,9 @@ def _eval_one_ensemble(args: tuple) -> dict:
         lf_sel,
         test_size,
         hf_horizon,
+        _wandb_api_key,
     ) = args
+    os.environ["WANDB_API_KEY"] = _wandb_api_key
 
     metrics, _two_stage_df = evaluate_hf_lf_pair_ensemble(
         pnode_id=pnode_id,
@@ -118,8 +120,6 @@ def random_test_hf_lf_ensemble_combinations(
     - pred_start
     - pred_end
     """
-    wandb.login(key=WANDB_API_KEY)
-    print(wandb.api.api_key)
     if num_evals <= 0:
         raise ValueError("num_evals must be positive")
     if min_hf <= 0 or min_lf <= 0:
@@ -140,7 +140,7 @@ def random_test_hf_lf_ensemble_combinations(
         n_lf = int(rng.integers(min_lf, max_lf + 1))
         hf_sel = rng.choice(hf_model_run_paths, size=n_hf, replace=False).tolist()
         lf_sel = rng.choice(lf_model_run_paths, size=n_lf, replace=False).tolist()
-        tasks.append((pnode_id, hf_sel, lf_sel, test_size, hf_horizon))
+        tasks.append((pnode_id, hf_sel, lf_sel, test_size, hf_horizon, WANDB_API_KEY))
 
     rows: list[dict] = []
     num_successful = 0
