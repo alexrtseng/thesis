@@ -7,10 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-import wandb
 from forecasting.test_forecaster_combo import evaluate_hf_lf_pair_ensemble
-from forecasting.train import WANDB_API_KEY
-
+WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
     "watt-our/thesis-hf-forecasters/tks540ei",  # transformer
     "watt-our/thesis-hf-forecasters/obvw0nqv",  # transformer
@@ -66,6 +64,7 @@ def _short_run_id(run_path: str) -> str:
 
 def _eval_one_ensemble(args: tuple) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
+    time.sleep(np.random.uniform(1, 10))
     (
         pnode_id,
         hf_sel,
@@ -245,7 +244,7 @@ if __name__ == "__main__":
     max_lf = 3
     test_size = 800  # should be 4320 or None for full runs
     hf_horizon = 6
-    num_workers = 4
+    num_workers = 5
     seed = None
 
     test_and_write_ensemble_combos(
