@@ -1,5 +1,3 @@
-import argparse
-import os
 import pickle
 from datetime import datetime
 from pathlib import Path
@@ -8,10 +6,10 @@ from typing import Any
 from darts import TimeSeries
 
 from forecasting.test_best_models import TEST_HF_MODEL_RUNS, TEST_LF_MODEL_RUNS
-from forecasting.test_forecaster_combo import _produce_forecasts_for_eval
+from forecasting.test_forecaster_combo import produce_forecasts_for_eval
 
 
-def _default_cache_path(pnode_id: int, test_size: int, hf_horizon: int) -> Path:
+def default_cache_path(pnode_id: int, test_size: int, hf_horizon: int) -> Path:
     cache_dir = Path("forecasting") / "outputs" / "forecast_cache"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return (
@@ -66,14 +64,18 @@ def get_cached_forecasts(
 
 
 def populate_cache(pnode_id: int, test_size: int, hf_horizon: int) -> None:
-    out_path = _default_cache_path(pnode_id, test_size, hf_horizon)
+    out_path = default_cache_path(pnode_id, test_size, hf_horizon)
+
+    if out_path.exists():
+        print("already exists")
+        return
 
     print(
         f"Generating forecast cache for pnode_id={pnode_id}, test_size={test_size}, hf_horizon={hf_horizon}"
     )
     print(f"HF runs: {len(TEST_HF_MODEL_RUNS)} | LF runs: {len(TEST_LF_MODEL_RUNS)}")
 
-    run_path_forecast_dict = _produce_forecasts_for_eval(
+    run_path_forecast_dict = produce_forecasts_for_eval(
         pnode_id=pnode_id,
         hf_run_paths=TEST_HF_MODEL_RUNS,
         lf_run_paths=TEST_LF_MODEL_RUNS,
@@ -103,7 +105,7 @@ def populate_cache(pnode_id: int, test_size: int, hf_horizon: int) -> None:
 if __name__ == "__main__":
     populate_cache(2156113094, 800, 6)
     forecasts = get_cached_forecasts(
-        _default_cache_path(2156113094, 800, 6), run_paths=[TEST_HF_MODEL_RUNS[0]]
+        default_cache_path(2156113094, 800, 6), run_paths=[TEST_HF_MODEL_RUNS[0]]
     )
     print(
         f"Loaded {len(forecasts)} runs from cache, first run has {len(forecasts[TEST_HF_MODEL_RUNS[0]])} forecasts"

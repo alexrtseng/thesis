@@ -1,17 +1,14 @@
 import os
-import pickle
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from forecasting.test_forecaster_combo import (
-    _produce_forecasts_for_eval,
-    evaluate_hf_lf_pair_ensemble,
-)
+from forecasting.evaluate_hf_lf_pair_ensemble import evaluate_hf_lf_pair_ensemble
+from forecasting.store_test_forecasts import default_cache_path, populate_cache
 
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
@@ -68,7 +65,7 @@ def _short_run_id(run_path: str) -> str:
 
 
 def _eval_one_ensemble(
-    pnode_id, hf_sel, lf_sel, test_size, hf_horizon, run_path_forecasts_dict=None
+    pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file=None
 ) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
     metrics, _ = evaluate_hf_lf_pair_ensemble(
@@ -77,7 +74,7 @@ def _eval_one_ensemble(
         lf_run_paths=lf_sel,
         test_size=test_size,
         hf_horizon=hf_horizon,
-        run_path_forecast_dict=run_path_forecasts_dict,
+        cache_file=cache_file,
     )
 
     return {
@@ -89,6 +86,35 @@ def _eval_one_ensemble(
         "pred_start": metrics["common_start"],
         "pred_end": metrics["common_end"],
     }
+
+
+def _available_cpu_count() -> int:
+    """Best-effort CPU count respecting Slurm/cgroup affinity."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    slurm = os.getenv("SLURM_CPUS_PER_TASK")
+    if slurm and slurm.isdigit():
+        return max(1, int(slurm))
+    return max(1, os.cpu_count() or 1)
+
+
+def _run_one_process(
+    args: tuple[int, int, list[str], list[str], int, int, str | None, float],
+) -> dict:
+    """Process worker: evaluate one task. Must be top-level for spawn pickling."""
+    idx, pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file, stagger_s = args
+    if stagger_s and stagger_s > 0:
+        time.sleep(stagger_s * idx)
+    return _eval_one_ensemble(
+        pnode_id,
+        hf_sel,
+        lf_sel,
+        test_size,
+        hf_horizon,
+        cache_file,
+    )
 
 
 def random_test_hf_lf_ensemble_combinations(
@@ -130,9 +156,8 @@ def random_test_hf_lf_ensemble_combinations(
     if max_lf > len(lf_model_run_paths):
         max_lf = len(lf_model_run_paths)
 
-    run_path_forecast_dict = _produce_forecasts_for_eval(
-        pnode_id, hf_model_run_paths, lf_model_run_paths, test_size, hf_horizon
-    )
+    populate_cache(pnode_id, test_size, hf_horizon)
+    cache_file = str(default_cache_path(pnode_id, test_size, hf_horizon))
 
     rng = np.random.default_rng(seed)
 
@@ -148,29 +173,29 @@ def random_test_hf_lf_ensemble_combinations(
     num_successful = 0
     num_failed = 0
 
-    def _run_one(task: tuple[int, list[str], list[str]]) -> dict:
-        idx, hf_sel, lf_sel = task
-        if stagger_s and stagger_s > 0:
-            time.sleep(stagger_s * idx)
-        return _eval_one_ensemble(
-            pnode_id,
-            hf_sel,
-            lf_sel,
-            test_size,
-            hf_horizon,
-            run_path_forecast_dict,
-        )
-
     if parallel and num_evals > 1:
         workers = max_workers
         if workers is None:
-            # Default: leave a core free to keep the system responsive.
-            workers = max(1, (os.cpu_count() or 2) - 1)
+            # Default: use all visible CPUs (Slurm affinity aware).
+            workers = _available_cpu_count()
 
         print(f"Running {num_evals} evaluations with {workers} workers...")
 
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = [ex.submit(_run_one, task) for task in tasks]
+        proc_tasks = [
+            (
+                idx,
+                pnode_id,
+                hf_sel,
+                lf_sel,
+                test_size,
+                hf_horizon,
+                cache_file,
+                float(stagger_s or 0.0),
+            )
+            for (idx, hf_sel, lf_sel) in tasks
+        ]
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_run_one_process, t) for t in proc_tasks]
             for fut in as_completed(futures):
                 try:
                     rows.append(fut.result())
@@ -181,7 +206,19 @@ def random_test_hf_lf_ensemble_combinations(
     else:
         for task in tasks:
             try:
-                rows.append(_run_one(task))
+                idx, hf_sel, lf_sel = task
+                if stagger_s and stagger_s > 0:
+                    time.sleep(stagger_s * idx)
+                rows.append(
+                    _eval_one_ensemble(
+                        pnode_id,
+                        hf_sel,
+                        lf_sel,
+                        test_size,
+                        hf_horizon,
+                        cache_file,
+                    )
+                )
                 num_successful += 1
             except Exception as e:
                 num_failed += 1
