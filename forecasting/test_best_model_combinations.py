@@ -1,12 +1,16 @@
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from forecasting.test_forecaster_combo import evaluate_hf_lf_pair_ensemble
+from forecasting.test_forecaster_combo import (
+    _produce_forecasts_for_eval,
+    evaluate_hf_lf_pair_ensemble,
+)
 
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
@@ -14,22 +18,22 @@ TEST_HF_MODEL_RUNS = [
     "watt-our/thesis-hf-forecasters/obvw0nqv",  # transformer
     "watt-our/thesis-hf-forecasters/ttzome1t",  # nhits
     "watt-our/thesis-hf-forecasters/j7oviesl",  # transformer
-    "watt-our/thesis-hf-forecasters/mh9t0r9v",  # tsmixer
-    "watt-our/thesis-hf-forecasters/wtdafv56",  # transformer
-    "watt-our/thesis-hf-forecasters/2keubomv",  # blockrnn
-    "watt-our/thesis-hf-forecasters/2ydmchx4",  # tsmixer
-    "watt-our/thesis-hf-forecasters/xl7ier6h",  # dlinear
-    "watt-our/thesis-hf-forecasters/lkujq05c",  # nhits
-    "watt-our/thesis-hf-forecasters/aclpbztf",  # nbeats
-    "watt-our/thesis-hf-forecasters/y3s9jm3u",  # tide
-    "watt-our/thesis-hf-forecasters/zu09p08u",  # RNN
-    "watt-our/thesis-hf-forecasters/qm3no329",  # TCN
-    "watt-our/thesis-hf-forecasters/d7odgxif",  # RNN
-    "watt-our/thesis-hf-forecasters/wqipc7pb",  # xgb
-    "watt-our/thesis-hf-forecasters/a2t6syeh",  # tcn
-    "watt-our/thesis-hf-forecasters/hrx8q1e6",  # xgb
-    "watt-our/thesis-hf-forecasters/wa2txvsd",  # tft
-    "watt-our/thesis-hf-forecasters/n9468o4a",  # autoarima
+    # "watt-our/thesis-hf-forecasters/mh9t0r9v",  # tsmixer
+    # "watt-our/thesis-hf-forecasters/wtdafv56",  # transformer
+    # "watt-our/thesis-hf-forecasters/2keubomv",  # blockrnn
+    # "watt-our/thesis-hf-forecasters/2ydmchx4",  # tsmixer
+    # "watt-our/thesis-hf-forecasters/xl7ier6h",  # dlinear
+    # "watt-our/thesis-hf-forecasters/lkujq05c",  # nhits
+    # "watt-our/thesis-hf-forecasters/aclpbztf",  # nbeats
+    # "watt-our/thesis-hf-forecasters/y3s9jm3u",  # tide
+    # "watt-our/thesis-hf-forecasters/zu09p08u",  # RNN
+    # "watt-our/thesis-hf-forecasters/qm3no329",  # TCN
+    # "watt-our/thesis-hf-forecasters/d7odgxif",  # RNN
+    # "watt-our/thesis-hf-forecasters/wqipc7pb",  # xgb
+    # "watt-our/thesis-hf-forecasters/a2t6syeh",  # tcn
+    # "watt-our/thesis-hf-forecasters/hrx8q1e6",  # xgb
+    # "watt-our/thesis-hf-forecasters/wa2txvsd",  # tft
+    # "watt-our/thesis-hf-forecasters/n9468o4a",  # autoarima
 ]
 
 TEST_LF_MODEL_RUNS = [
@@ -37,22 +41,22 @@ TEST_LF_MODEL_RUNS = [
     "watt-our/thesis-lf-forecasters/a3ilhshd",  # XGB
     "watt-our/thesis-lf-forecasters/4b1o2o11",  # tsmixer
     "watt-our/thesis-lf-forecasters/9je5svmu",  # xgboost
-    "watt-our/thesis-lf-forecasters/60zx0lhp",  # xgboost
-    "watt-our/thesis-lf-forecasters/epkknrba",  # xgboost
-    "watt-our/thesis-lf-forecasters/k9jkje7f",  # xgboost
-    "watt-our/thesis-lf-forecasters/hk4zyw7a",  # xgboost
-    "watt-our/thesis-lf-forecasters/gwwjxk6g",  # rnn
-    "watt-our/thesis-lf-forecasters/1grl6iaf",  # xgb
-    "watt-our/thesis-lf-forecasters/j0r01ir1",  # tcn
-    "watt-our/thesis-lf-forecasters/lx82mfuf",  # tide
-    "watt-our/thesis-lf-forecasters/zqd9zf36",  # rnn
-    "watt-our/thesis-lf-forecasters/75610i3y",  # tft
-    "watt-our/thesis-lf-forecasters/2jcdrsn8",  # nhits
-    "watt-our/thesis-lf-forecasters/db1wpxb6",  # blockrnn
-    "watt-our/thesis-lf-forecasters/bpp4kwd9",  # dlinear
-    "watt-our/thesis-lf-forecasters/iwvd9kfh",  # nbeats
-    "watt-our/thesis-lf-forecasters/fl8aigij",  # transformer
-    "watt-our/thesis-lf-forecasters/0c7iapks",  # autoarima
+    # "watt-our/thesis-lf-forecasters/60zx0lhp",  # xgboost
+    # "watt-our/thesis-lf-forecasters/epkknrba",  # xgboost
+    # "watt-our/thesis-lf-forecasters/k9jkje7f",  # xgboost
+    # "watt-our/thesis-lf-forecasters/hk4zyw7a",  # xgboost
+    # "watt-our/thesis-lf-forecasters/gwwjxk6g",  # rnn
+    # "watt-our/thesis-lf-forecasters/1grl6iaf",  # xgb
+    # "watt-our/thesis-lf-forecasters/j0r01ir1",  # tcn
+    # "watt-our/thesis-lf-forecasters/lx82mfuf",  # tide
+    # "watt-our/thesis-lf-forecasters/zqd9zf36",  # rnn
+    # "watt-our/thesis-lf-forecasters/75610i3y",  # tft
+    # "watt-our/thesis-lf-forecasters/2jcdrsn8",  # nhits
+    # "watt-our/thesis-lf-forecasters/db1wpxb6",  # blockrnn
+    # "watt-our/thesis-lf-forecasters/bpp4kwd9",  # dlinear
+    # "watt-our/thesis-lf-forecasters/iwvd9kfh",  # nbeats
+    # "watt-our/thesis-lf-forecasters/fl8aigij",  # transformer
+    # "watt-our/thesis-lf-forecasters/0c7iapks",  # autoarima
 ]
 
 
@@ -63,19 +67,16 @@ def _short_run_id(run_path: str) -> str:
 
 
 def _eval_one_ensemble(
-    pnode_id,
-    hf_sel,
-    lf_sel,
-    test_size,
-    hf_horizon,
+    pnode_id, hf_sel, lf_sel, test_size, hf_horizon, run_path_forecasts_dict=None
 ) -> dict:
     """Worker: evaluate one randomly-sampled HF/LF ensemble combination."""
-    metrics, _two_stage_df = evaluate_hf_lf_pair_ensemble(
+    metrics, _ = evaluate_hf_lf_pair_ensemble(
         pnode_id=pnode_id,
         hf_run_paths=hf_sel,
         lf_run_paths=lf_sel,
         test_size=test_size,
         hf_horizon=hf_horizon,
+        run_path_forecast_dict=run_path_forecasts_dict,
     )
 
     return {
@@ -101,6 +102,9 @@ def random_test_hf_lf_ensemble_combinations(
     test_size: int = 300,
     hf_horizon: int = 6,
     seed: int | None = None,
+    max_workers: int | None = None,
+    stagger_s: float = 0.0,
+    parallel: bool = True,
 ) -> pd.DataFrame:
     """Randomly sample HF/LF ensembles and evaluate via two-stage stochastic MPC.
 
@@ -125,24 +129,62 @@ def random_test_hf_lf_ensemble_combinations(
     if max_lf > len(lf_model_run_paths):
         max_lf = len(lf_model_run_paths)
 
+    run_path_forecast_dict = _produce_forecasts_for_eval(
+        pnode_id, hf_model_run_paths, lf_model_run_paths, test_size, hf_horizon
+    )
+
     rng = np.random.default_rng(seed)
 
-    rows: list[dict] = []
-    num_successful = 0
-    num_failed = 0
-    for _ in range(num_evals):
+    tasks: list[tuple[int, list[str], list[str]]] = []
+    for idx in range(num_evals):
         n_hf = int(rng.integers(min_hf, max_hf + 1))
         n_lf = int(rng.integers(min_lf, max_lf + 1))
         hf_sel = rng.choice(hf_model_run_paths, size=n_hf, replace=False).tolist()
         lf_sel = rng.choice(lf_model_run_paths, size=n_lf, replace=False).tolist()
-        try:
-            rows.append(
-                _eval_one_ensemble(pnode_id, hf_sel, lf_sel, test_size, hf_horizon)
-            )
-            num_successful += 1
-        except Exception as e:
-            num_failed += 1
-            print(f"Error in evaluation: {e}")
+        tasks.append((idx, hf_sel, lf_sel))
+
+    rows: list[dict] = []
+    num_successful = 0
+    num_failed = 0
+
+    def _run_one(task: tuple[int, list[str], list[str]]) -> dict:
+        idx, hf_sel, lf_sel = task
+        if stagger_s and stagger_s > 0:
+            time.sleep(stagger_s * idx)
+        return _eval_one_ensemble(
+            pnode_id,
+            hf_sel,
+            lf_sel,
+            test_size,
+            hf_horizon,
+            run_path_forecast_dict,
+        )
+
+    if parallel and num_evals > 1:
+        workers = max_workers
+        if workers is None:
+            # Default: leave a core free to keep the system responsive.
+            workers = max(1, (os.cpu_count() or 2) - 1)
+
+        print(f"Running {num_evals} evaluations with {workers} workers...")
+
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_run_one, task) for task in tasks]
+            for fut in as_completed(futures):
+                try:
+                    rows.append(fut.result())
+                    num_successful += 1
+                except Exception as e:
+                    num_failed += 1
+                    print(f"Error in evaluation: {e}")
+    else:
+        for task in tasks:
+            try:
+                rows.append(_run_one(task))
+                num_successful += 1
+            except Exception as e:
+                num_failed += 1
+                print(f"Error in evaluation: {e}")
 
     print(f"Successful iterations: {num_successful}, Failed iterations: {num_failed}")
     return pd.DataFrame(rows)
@@ -159,6 +201,8 @@ def test_and_write_ensemble_combos(
     hf_horizon,
     seed,
     run_name: str = None,
+    max_workers: int | None = None,
+    stagger_s: float = 0.0,
 ):
     start = time.perf_counter()
     df = random_test_hf_lf_ensemble_combinations(
@@ -173,6 +217,9 @@ def test_and_write_ensemble_combos(
         test_size=test_size,  # should be 4320 or None for full runs
         hf_horizon=hf_horizon,
         seed=seed,
+        max_workers=max_workers,
+        stagger_s=stagger_s,
+        parallel=True,
     )
     elapsed = time.perf_counter() - start
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -207,7 +254,7 @@ def test_and_write_ensemble_combos(
 
 if __name__ == "__main__":
     pnode_id = 2156113094
-    num_evals = 5
+    num_evals = 20
     min_hf = 1
     max_hf = 3
     min_lf = 1
@@ -215,6 +262,8 @@ if __name__ == "__main__":
     test_size = 800  # should be 4320 or None for full runs
     hf_horizon = 6
     seed = None
+    max_workers = None
+    stagger_s = 0.0
 
     test_and_write_ensemble_combos(
         pnode_id=pnode_id,
@@ -226,4 +275,6 @@ if __name__ == "__main__":
         test_size=test_size,
         hf_horizon=hf_horizon,
         seed=seed,
+        max_workers=max_workers,
+        stagger_s=stagger_s,
     )

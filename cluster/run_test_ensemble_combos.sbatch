@@ -40,6 +40,7 @@ export TORCH_PRECISION=bf16-mixed
 export NUM_EVALS=${NUM_EVALS:-5}
 export HF_HORIZON=${HF_HORIZON:-6}
 export DEV=0
+export MAX_WORKERS=${MAX_WORKERS:-10}
 
 PYBIN="$(command -v python)"
 
@@ -62,6 +63,7 @@ test_size = None
 hf_horizon = int(os.environ.get("HF_HORIZON", 6))
 seed = None
 run_name = os.environ.get("RUN_NAME", None)
+max_workers = int(os.environ.get("MAX_WORKERS", 10))
 
 test_and_write_ensemble_combos(
     pnode_id=pnode_id,
@@ -74,5 +76,6 @@ test_and_write_ensemble_combos(
     hf_horizon=hf_horizon,
     seed=seed,
     run_name=run_name,
+    max_workers=max_workers,
 )
 PY

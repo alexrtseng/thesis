@@ -339,23 +339,13 @@ def evaluate_hf_lf_pair(
     return joint_opt_metrics, hf_run.name, lf_run.name if not pjm_da_preds else "PJMDa"
 
 
-def evaluate_hf_lf_pair_ensemble(
+def _produce_forecasts_for_eval(
     pnode_id: int,
     hf_run_paths: list[str] | None,
     lf_run_paths: list[str] | None,
     test_size: int | None = None,
     hf_horizon: int = 6,
 ):
-    """Evaluate an ensemble of HF and/or LF models using two-stage stochastic MPC.
-
-    Branches are constructed as the cartesian product of the forecasters passed:
-    - H HF models and L LF models => branches = H*L
-
-    The optimization uses the two-stage solver in `stochastic/warm_start_arb.py`:
-    - stage 1: shared first-interval decision
-    - stage 2: scenario-dependent decisions (one per branch)
-    """
-
     hf_run_paths = hf_run_paths or []
     lf_run_paths = lf_run_paths or []
     if len(hf_run_paths) == 0 or len(lf_run_paths) == 0:
@@ -365,7 +355,6 @@ def evaluate_hf_lf_pair_ensemble(
     if hf_horizon <= 0:
         raise ValueError("hf_horizon must be positive")
 
-    t_start = time.perf_counter()
     feature_df_full = build_series_for_node(pnode_id)
     feature_df_full["lmp_lf_avg"] = (
         feature_df_full["lmp_rt"].rolling(window=13, center=True, min_periods=1).mean()
@@ -395,9 +384,8 @@ def evaluate_hf_lf_pair_ensemble(
     for i in range(len(hourly_feature_dfs)):
         hourly_feature_dfs[i] = hourly_feature_dfs[i][: len(hourly_feature_dfs[11])]
 
+    run_path_forecast_dict = {}
     # --- Generate HF predictions for each HF model ---
-    hf_pred_sets: list[list[TimeSeries]] = []
-    hf_run_names: list[str] = []
     for (hf_model, hf_cfg, hf_summ, hf_run), _path in hf_loaded:
         # Fit scalers on training portion derived from the full feature dataframe.
         hf_scalar_y, hf_scalar_feat = _create_transformers(
@@ -429,13 +417,9 @@ def evaluate_hf_lf_pair_ensemble(
             )
         print(f"HF model {hf_run.name} generated {len(preds)} predictions.")
 
-        hf_pred_sets.append(preds)
-        hf_run_names.append(hf_run.name)
+        run_path_forecast_dict[_path] = preds
 
     # --- Generate LF predictions for each LF model (or DA baseline) ---
-    lf_pred_sets: list[list[TimeSeries]] = []
-    lf_run_names: list[str] = []
-
     for (lf_model, lf_cfg, lf_summ, lf_run), _path in lf_loaded:
         # Fit scalers on training portion derived from the full feature dataframe.
         lf_scalar_y, lf_scalar_feat = _create_transformers(
@@ -468,9 +452,33 @@ def evaluate_hf_lf_pair_ensemble(
             )
         print(f"LF model {lf_run.name} generated {len(preds)} predictions.")
 
-        lf_pred_sets.append(preds)
-        lf_run_names.append(lf_run.name)
+        run_path_forecast_dict[_path] = preds
 
+    return run_path_forecast_dict
+
+
+def evaluate_hf_lf_pair_ensemble(
+    pnode_id: int,
+    hf_run_paths: list[str] | None,
+    lf_run_paths: list[str] | None,
+    test_size: int | None = None,
+    hf_horizon: int = 6,
+    run_path_forecast_dict=None,
+):
+    t_start = time.perf_counter()
+    if run_path_forecast_dict is None:
+        run_path_forecast_dict = _produce_forecasts_for_eval(
+            pnode_id, hf_run_paths, lf_run_paths, test_size, hf_horizon
+        )
+    hf_pred_sets: list[list[TimeSeries]] = []
+    lf_pred_sets: list[list[TimeSeries]] = []
+    for hf_run_path in hf_run_paths:
+        hf_pred_sets.append(run_path_forecast_dict[hf_run_path])
+
+    for lf_run_path in lf_run_paths:
+        lf_pred_sets.append(run_path_forecast_dict[lf_run_path])
+
+    feature_df = build_series_for_node(pnode_id)    
     # --- Align all HF/LF prediction origin ranges to a common [start, end] window ---
     def _steps_between(t0: pd.Timestamp, t1: pd.Timestamp, step_minutes: int) -> int:
         delta = (t1 - t0).total_seconds() / (60 * step_minutes)
@@ -654,8 +662,8 @@ def evaluate_hf_lf_pair_ensemble(
         "branches": branches,
         "hf_horizon": hf_horizon,
         "eval_points": int(limit),
-        "hf_models": hf_run_names,
-        "lf_models": lf_run_names,
+        "hf_run_paths": hf_run_paths,
+        "lf_run_paths": lf_run_paths,
         "total_time_taken_s": float(time.perf_counter() - t_start),
         "common_start": common_start.strftime("%Y-%m-%d %H:%M:%S"),
         "common_end": common_end.strftime("%Y-%m-%d %H:%M:%S"),
