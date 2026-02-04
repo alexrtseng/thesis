@@ -4,7 +4,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=30
-#SBATCH --mem=700G
+#SBATCH --mem=400G
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --export=ALL
