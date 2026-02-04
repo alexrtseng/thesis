@@ -4,7 +4,7 @@
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
 #SBATCH --cpus-per-task=30
-#SBATCH --mem=1000G
+#SBATCH --mem=700G
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --export=ALL
@@ -47,7 +47,7 @@ export MIN_LF=${MIN_LF:-1}
 export MAX_LF=${MAX_LF:-10}
 export TEST_SIZE=${TEST_SIZE:-None}
 export SEED=${SEED:-None}
-export MAX_WORKERS=${MAX_WORKERS:-None}
+export MAX_WORKERS=${MAX_WORKERS:-6}
 export STAGGER_S=${STAGGER_S:-0.0}
 export RUN_NAME=${RUN_NAME:-None}
 export DEV=0
