@@ -1,6 +1,7 @@
 import argparse
 import multiprocessing as mp
 import os
+import signal
 import sys
 import time
 import traceback
@@ -13,6 +14,10 @@ import pandas as pd
 
 from forecasting.evaluate_hf_lf_pair_ensemble import evaluate_hf_lf_pair_ensemble
 from forecasting.store_test_forecasts import default_cache_path, populate_cache
+
+# Hardcoded per-evaluation wall-clock timeout.
+# Prevents a single stuck eval (solver/network/IO) from keeping the whole job alive.
+PER_EVAL_TIMEOUT_S = 60 * 60  # 1 hour
 
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
@@ -112,14 +117,27 @@ def _run_one_process(
     try:
         if stagger_s and stagger_s > 0:
             time.sleep(stagger_s * idx)
-        return _eval_one_ensemble(
-            pnode_id,
-            hf_sel,
-            lf_sel,
-            test_size,
-            hf_horizon,
-            cache_file,
-        )
+
+        def _raise_timeout(_signum, _frame):
+            raise TimeoutError(
+                f"Evaluation idx={idx} exceeded timeout ({PER_EVAL_TIMEOUT_S}s)"
+            )
+
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, _raise_timeout)
+        signal.alarm(int(PER_EVAL_TIMEOUT_S))
+        try:
+            return _eval_one_ensemble(
+                pnode_id,
+                hf_sel,
+                lf_sel,
+                test_size,
+                hf_horizon,
+                cache_file,
+            )
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
     except BaseException:
         # If the worker is dying due to a normal Python exception (not segfault/OOM),
         # this prints a full traceback into the Slurm log.
@@ -221,30 +239,34 @@ def random_test_hf_lf_ensemble_combinations(
                 try:
                     rows.append(fut.result())
                     num_successful += 1
+                    print(f"Completed evaluations: {num_successful + num_failed}")
                 except Exception as e:
                     num_failed += 1
                     print(f"Error in evaluation: {e}")
+                    print(f"Completed evaluations: {num_successful + num_failed}")
     else:
         for task in tasks:
             try:
                 idx, hf_sel, lf_sel = task
-                if stagger_s and stagger_s > 0:
-                    time.sleep(stagger_s * idx)
                 rows.append(
-                    _eval_one_ensemble(
-                        pnode_id,
-                        hf_sel,
-                        lf_sel,
-                        test_size,
-                        hf_horizon,
-                        cache_file,
+                    _run_one_process(
+                        (
+                            idx,
+                            pnode_id,
+                            hf_sel,
+                            lf_sel,
+                            test_size,
+                            hf_horizon,
+                            cache_file,
+                            float(stagger_s or 0.0),
+                        )
                     )
                 )
                 num_successful += 1
             except Exception as e:
                 num_failed += 1
                 print(f"Error in evaluation: {e}")
-
+                print(f"Completed evaluations: {num_successful + num_failed}")
     print(f"Successful iterations: {num_successful}, Failed iterations: {num_failed}")
     return pd.DataFrame(rows)
 
