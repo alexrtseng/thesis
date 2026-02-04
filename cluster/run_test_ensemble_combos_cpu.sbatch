@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH --job-name=thesis-gpu-sweeps
+#SBATCH --job-name=thesis-combo-cpu-test
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
@@ -47,32 +47,15 @@ nvidia-smi || true
 $PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
 
 # launch job: test best HF/LF model combinations
-srun -u "$PYBIN" - <<'PY'
-import os
-from forecasting.test_best_model_combinations import test_and_write_ensemble_combos
-
-pnode_id = 2156113094
-num_evals = int(os.environ.get("NUM_EVALS", 5))
-min_hf = 1
-max_hf = 10
-min_lf = 1
-max_lf = 10
-test_size = None
-hf_horizon = int(os.environ.get("HF_HORIZON", 6))
-seed = None
-run_name = os.environ.get("RUN_NAME", None)
-
-test_and_write_ensemble_combos(
-    pnode_id=pnode_id,
-    num_evals=num_evals,
-    min_hf=min_hf,
-    max_hf=max_hf,
-    min_lf=min_lf,
-    max_lf=max_lf,
-    test_size=test_size,
-    hf_horizon=hf_horizon,
-    seed=seed,
-    run_name=run_name,
-    max_workers=None,
-)
-PY
+python -m forecasting.test_best_model_combinations \
+  --pnode-id "$PNODE_ID" \
+  --num-evals "$NUM_EVALS" \
+  --min-hf 1 \
+  --max-hf 10 \
+  --min-lf 1 \
+  --max-lf 10 \
+  --test-size None \
+  --hf-horizon "$HF_HORIZON" \
+  --seed None \
+  --max-workers None \
+  --stagger-s 0.0
