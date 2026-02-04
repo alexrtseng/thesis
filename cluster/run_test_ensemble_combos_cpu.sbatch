@@ -38,6 +38,7 @@ export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
 export NUM_EVALS=${NUM_EVALS:-5}
 export HF_HORIZON=${HF_HORIZON:-6}
+export RUN_NAME=${RUN_NAME:-None}
 export DEV=0
 
 PYBIN="$(command -v python)"
@@ -58,4 +59,5 @@ python -m forecasting.test_best_model_combinations \
   --hf-horizon "$HF_HORIZON" \
   --seed None \
   --max-workers None \
+  --run-name "$RUN_NAME" \
   --stagger-s 0.0
