@@ -1,11 +1,11 @@
 #!/bin/bash -l
-#SBATCH --job-name=thesis-gpu-sweeps
+#SBATCH --job-name=thesis-combo-cpu-test
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #SBATCH --time=24:00:00
-#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=30
-#SBATCH --mem=256G
+#SBATCH --gres=gpu:1
+#SBATCH --mem=400G
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --export=ALL
@@ -29,6 +29,9 @@ export MAMBA_ROOT_PREFIX
 eval "$(../tools/bin/micromamba shell hook -s bash)"
 micromamba activate ../.venv
 
+# Ensure relative paths resolve from the repo root
+cd "${SLURM_SUBMIT_DIR:-$PWD}"
+
 # thread throttles
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
@@ -39,41 +42,23 @@ export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
 export NUM_EVALS=${NUM_EVALS:-5}
 export HF_HORIZON=${HF_HORIZON:-6}
+export MIN_HF=${MIN_HF:-1}
+export MAX_HF=${MAX_HF:-10}
+export MIN_LF=${MIN_LF:-1}
+export MAX_LF=${MAX_LF:-10}
+export TEST_SIZE=${TEST_SIZE:-None}
+export SEED=${SEED:-None}
+export MAX_WORKERS=${MAX_WORKERS:-6}
+export STAGGER_S=${STAGGER_S:-0.0}
+export RUN_NAME=${RUN_NAME:-None}
 export DEV=0
 
 PYBIN="$(command -v python)"
 
 # quick diagnostics (these lines appear in logs/%x_%j.out)
-nvidia-smi || true
+command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi || true
 $PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
 
 # launch job: test best HF/LF model combinations
-srun -u "$PYBIN" - <<'PY'
-import os
-from forecasting.test_best_model_combinations import test_and_write_ensemble_combos
-
-pnode_id = 2156113094
-num_evals = int(os.environ.get("NUM_EVALS", 5))
-min_hf = 1
-max_hf = 10
-min_lf = 1
-max_lf = 10
-test_size = None
-hf_horizon = int(os.environ.get("HF_HORIZON", 6))
-seed = None
-run_name = os.environ.get("RUN_NAME", None)
-
-test_and_write_ensemble_combos(
-    pnode_id=pnode_id,
-    num_evals=num_evals,
-    min_hf=min_hf,
-    max_hf=max_hf,
-    min_lf=min_lf,
-    max_lf=max_lf,
-    test_size=test_size,
-    hf_horizon=hf_horizon,
-    seed=seed,
-    run_name=run_name,
-    max_workers=None,
-)
-PY
+# (env-driven; avoids stdin launch so multiprocessing spawn can re-import __main__)
+srun -u "$PYBIN" -m forecasting.test_best_model_combinations
