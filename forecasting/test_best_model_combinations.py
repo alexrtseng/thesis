@@ -1,5 +1,8 @@
+import multiprocessing as mp
 import os
+import sys
 import time
+import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -105,16 +108,25 @@ def _run_one_process(
 ) -> dict:
     """Process worker: evaluate one task. Must be top-level for spawn pickling."""
     idx, pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file, stagger_s = args
-    if stagger_s and stagger_s > 0:
-        time.sleep(stagger_s * idx)
-    return _eval_one_ensemble(
-        pnode_id,
-        hf_sel,
-        lf_sel,
-        test_size,
-        hf_horizon,
-        cache_file,
-    )
+    try:
+        if stagger_s and stagger_s > 0:
+            time.sleep(stagger_s * idx)
+        return _eval_one_ensemble(
+            pnode_id,
+            hf_sel,
+            lf_sel,
+            test_size,
+            hf_horizon,
+            cache_file,
+        )
+    except BaseException:
+        # If the worker is dying due to a normal Python exception (not segfault/OOM),
+        # this prints a full traceback into the Slurm log.
+        print(
+            "Worker exception:\n" + traceback.format_exc(),
+            flush=True,
+        )
+        raise
 
 
 def random_test_hf_lf_ensemble_combinations(
@@ -194,7 +206,15 @@ def random_test_hf_lf_ensemble_combinations(
             )
             for (idx, hf_sel, lf_sel) in tasks
         ]
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        # On many HPC clusters, using the default 'fork' start method can cause
+        # native libraries (notably Gurobi) to crash in child processes.
+        ctx = mp.get_context("spawn")
+        ex_kwargs = {"max_workers": workers, "mp_context": ctx}
+        # Python 3.11+ supports recycling workers to avoid memory growth.
+        if sys.version_info >= (3, 11):
+            ex_kwargs["max_tasks_per_child"] = 10
+
+        with ProcessPoolExecutor(**ex_kwargs) as ex:
             futures = [ex.submit(_run_one_process, t) for t in proc_tasks]
             for fut in as_completed(futures):
                 try:
