@@ -351,6 +351,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--stagger-s", type=float, default=0.0, help="Stagger time in seconds"
     )
+    parser.add_argument(
+        "--run-name",
+        type=lambda x: x if x.lower() != "none" else None,
+        default=None,
+        help="Run name for output directory",
+    )
 
     args = parser.parse_args()
 
@@ -366,4 +372,5 @@ if __name__ == "__main__":
         seed=args.seed,
         max_workers=args.max_workers,
         stagger_s=args.stagger_s,
+        run_name=args.run_name,
     )
