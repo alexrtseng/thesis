@@ -28,6 +28,9 @@ export MAMBA_ROOT_PREFIX
 eval "$(../tools/bin/micromamba shell hook -s bash)"
 micromamba activate ../.venv
 
+# Ensure relative paths resolve from the repo root
+cd "${SLURM_SUBMIT_DIR:-$PWD}"
+
 # thread throttles
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
@@ -38,26 +41,23 @@ export TORCH_MATMUL_PRECISION=tf32
 export TORCH_PRECISION=bf16-mixed
 export NUM_EVALS=${NUM_EVALS:-5}
 export HF_HORIZON=${HF_HORIZON:-6}
+export MIN_HF=${MIN_HF:-1}
+export MAX_HF=${MAX_HF:-10}
+export MIN_LF=${MIN_LF:-1}
+export MAX_LF=${MAX_LF:-10}
+export TEST_SIZE=${TEST_SIZE:-None}
+export SEED=${SEED:-None}
+export MAX_WORKERS=${MAX_WORKERS:-None}
+export STAGGER_S=${STAGGER_S:-0.0}
 export RUN_NAME=${RUN_NAME:-None}
 export DEV=0
 
 PYBIN="$(command -v python)"
 
 # quick diagnostics (these lines appear in logs/%x_%j.out)
-nvidia-smi || true
+command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi || true
 $PYBIN -c "import sys,torch; print(sys.executable); print('Torch', torch.__version__, 'CUDA?', torch.cuda.is_available())"
 
 # launch job: test best HF/LF model combinations
-python -m forecasting.test_best_model_combinations \
-  --pnode-id "$PNODE_ID" \
-  --num-evals "$NUM_EVALS" \
-  --min-hf 1 \
-  --max-hf 10 \
-  --min-lf 1 \
-  --max-lf 10 \
-  --test-size None \
-  --hf-horizon "$HF_HORIZON" \
-  --seed None \
-  --max-workers None \
-  --run-name "$RUN_NAME" \
-  --stagger-s 0.0
+# (env-driven; avoids stdin launch so multiprocessing spawn can re-import __main__)
+srun -u "$PYBIN" -m forecasting.test_best_model_combinations

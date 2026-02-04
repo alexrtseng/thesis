@@ -308,69 +308,138 @@ def test_and_write_ensemble_combos(
         f.write(f"hf_horizon: {hf_horizon}\n")
     print(f"Wrote results to {out_path}")
     print(f"Total runtime (s): {elapsed:.2f}")
-    print(df.sort_values("pct_perf", ascending=False).head(10))
+    if df.empty:
+        print("No successful evaluations; results DataFrame is empty.")
+    elif "pct_perf" not in df.columns:
+        print(
+            f"Results DataFrame missing 'pct_perf' column. Columns: {list(df.columns)}"
+        )
+    else:
+        print(df.sort_values("pct_perf", ascending=False).head(10))
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default)).strip()
+    return int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default)).strip()
+    return float(raw)
+
+
+def _env_opt_int(name: str, default: int | None) -> int | None:
+    raw = os.getenv(name, "" if default is None else str(default)).strip()
+    if raw.lower() in {"", "none", "null"}:
+        return None
+    return int(raw)
+
+
+def _env_opt_str(name: str, default: str | None) -> str | None:
+    raw = os.getenv(name, "" if default is None else str(default)).strip()
+    if raw.lower() in {"", "none", "null"}:
+        return None
+    return raw
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Entry point.
+
+    - If CLI args are provided, uses argparse (backward compatible).
+    - If no CLI args are provided, reads configuration from environment variables.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if len(argv) == 0:
+        pnode_id = _env_int("PNODE_ID", 2156113094)
+        num_evals = _env_int("NUM_EVALS", 5)
+        min_hf = _env_int("MIN_HF", 1)
+        max_hf = _env_int("MAX_HF", 10)
+        min_lf = _env_int("MIN_LF", 1)
+        max_lf = _env_int("MAX_LF", 10)
+        test_size = _env_opt_int("TEST_SIZE", None)
+        hf_horizon = _env_int("HF_HORIZON", 6)
+        seed = _env_opt_int("SEED", None)
+        max_workers = _env_opt_int("MAX_WORKERS", None)
+        stagger_s = _env_float("STAGGER_S", 0.0)
+        run_name = _env_opt_str("RUN_NAME", None)
+    else:
+        parser = argparse.ArgumentParser(description="Test best model combinations")
+        parser.add_argument("--pnode-id", type=int, required=True, help="Power node ID")
+        parser.add_argument(
+            "--num-evals", type=int, required=True, help="Number of evaluations"
+        )
+        parser.add_argument(
+            "--min-hf", type=int, default=1, help="Minimum number of HF forecasters"
+        )
+        parser.add_argument(
+            "--max-hf", type=int, default=10, help="Maximum number of HF forecasters"
+        )
+        parser.add_argument(
+            "--min-lf", type=int, default=1, help="Minimum number of LF forecasters"
+        )
+        parser.add_argument(
+            "--max-lf", type=int, default=10, help="Maximum number of LF forecasters"
+        )
+        parser.add_argument(
+            "--test-size",
+            type=lambda x: int(x) if x.lower() != "none" else None,
+            default=None,
+            help="Test size",
+        )
+        parser.add_argument("--hf-horizon", type=int, required=True, help="HF horizon")
+        parser.add_argument(
+            "--seed",
+            type=lambda x: int(x) if x.lower() != "none" else None,
+            default=None,
+            help="Random seed",
+        )
+        parser.add_argument(
+            "--max-workers",
+            type=lambda x: int(x) if x.lower() != "none" else None,
+            default=None,
+            help="Maximum workers",
+        )
+        parser.add_argument(
+            "--stagger-s", type=float, default=0.0, help="Stagger time in seconds"
+        )
+        parser.add_argument(
+            "--run-name",
+            type=lambda x: x if x.lower() != "none" else None,
+            default=None,
+            help="Run name for output directory",
+        )
+
+        args = parser.parse_args(argv)
+        pnode_id = args.pnode_id
+        num_evals = args.num_evals
+        min_hf = args.min_hf
+        max_hf = args.max_hf
+        min_lf = args.min_lf
+        max_lf = args.max_lf
+        test_size = args.test_size
+        hf_horizon = args.hf_horizon
+        seed = args.seed
+        max_workers = args.max_workers
+        stagger_s = args.stagger_s
+        run_name = args.run_name
+
+    test_and_write_ensemble_combos(
+        pnode_id=pnode_id,
+        num_evals=num_evals,
+        min_hf=min_hf,
+        max_hf=max_hf,
+        min_lf=min_lf,
+        max_lf=max_lf,
+        test_size=test_size,
+        hf_horizon=hf_horizon,
+        seed=seed,
+        max_workers=max_workers,
+        stagger_s=stagger_s,
+        run_name=run_name,
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test best model combinations")
-    parser.add_argument("--pnode-id", type=int, required=True, help="Power node ID")
-    parser.add_argument(
-        "--num-evals", type=int, required=True, help="Number of evaluations"
-    )
-    parser.add_argument(
-        "--min-hf", type=int, default=1, help="Minimum number of HF forecasters"
-    )
-    parser.add_argument(
-        "--max-hf", type=int, default=10, help="Maximum number of HF forecasters"
-    )
-    parser.add_argument(
-        "--min-lf", type=int, default=1, help="Minimum number of LF forecasters"
-    )
-    parser.add_argument(
-        "--max-lf", type=int, default=10, help="Maximum number of LF forecasters"
-    )
-    parser.add_argument(
-        "--test-size",
-        type=lambda x: int(x) if x.lower() != "none" else None,
-        default=None,
-        help="Test size",
-    )
-    parser.add_argument("--hf-horizon", type=int, required=True, help="HF horizon")
-    parser.add_argument(
-        "--seed",
-        type=lambda x: int(x) if x.lower() != "none" else None,
-        default=None,
-        help="Random seed",
-    )
-    parser.add_argument(
-        "--max-workers",
-        type=lambda x: int(x) if x.lower() != "none" else None,
-        default=None,
-        help="Maximum workers",
-    )
-    parser.add_argument(
-        "--stagger-s", type=float, default=0.0, help="Stagger time in seconds"
-    )
-    parser.add_argument(
-        "--run-name",
-        type=lambda x: x if x.lower() != "none" else None,
-        default=None,
-        help="Run name for output directory",
-    )
-
-    args = parser.parse_args()
-
-    test_and_write_ensemble_combos(
-        pnode_id=args.pnode_id,
-        num_evals=args.num_evals,
-        min_hf=args.min_hf,
-        max_hf=args.max_hf,
-        min_lf=args.min_lf,
-        max_lf=args.max_lf,
-        test_size=args.test_size,
-        hf_horizon=args.hf_horizon,
-        seed=args.seed,
-        max_workers=args.max_workers,
-        stagger_s=args.stagger_s,
-        run_name=args.run_name,
-    )
+    main()
