@@ -1,7 +1,6 @@
 import argparse
 import multiprocessing as mp
 import os
-import signal
 import sys
 import time
 import traceback
@@ -17,7 +16,7 @@ from forecasting.store_test_forecasts import default_cache_path, populate_cache
 
 # Hardcoded per-evaluation wall-clock timeout.
 # Prevents a single stuck eval (solver/network/IO) from keeping the whole job alive.
-PER_EVAL_TIMEOUT_S = 60 * 60  # 1 hour
+PER_EVAL_TIMEOUT_S = 60 * 30  # 30 minutes
 
 WANDB_API_KEY = os.getenv("WANDB_API_KEY")
 TEST_HF_MODEL_RUNS = [
@@ -109,35 +108,63 @@ def _available_cpu_count() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def _eval_one_ensemble_child(
+    q: mp.queues.Queue,
+    idx: int,
+    pnode_id: int,
+    hf_sel: list[str],
+    lf_sel: list[str],
+    test_size: int,
+    hf_horizon: int,
+    cache_file: str | None,
+) -> None:
+    """Run one eval in a child process and report result via a queue."""
+    try:
+        res = _eval_one_ensemble(
+            pnode_id,
+            hf_sel,
+            lf_sel,
+            test_size,
+            hf_horizon,
+            cache_file,
+        )
+        q.put(("ok", res))
+    except BaseException:
+        q.put(("err", f"idx={idx}\n{traceback.format_exc()}"))
+
+
 def _run_one_process(
-    args: tuple[int, int, list[str], list[str], int, int, str | None, float],
+    args: tuple[int, int, list[str], list[str], int, int, str | None],
 ) -> dict:
     """Process worker: evaluate one task. Must be top-level for spawn pickling."""
-    idx, pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file, stagger_s = args
+    idx, pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file = args
     try:
-        if stagger_s and stagger_s > 0:
-            time.sleep(stagger_s * idx)
+        # Hard timeout: run the eval in a subprocess so we can terminate it even if
+        # it hangs inside native code (solver/network/IO).
+        ctx = mp.get_context("spawn")
+        q = ctx.Queue(maxsize=1)
+        p = ctx.Process(
+            target=_eval_one_ensemble_child,
+            args=(q, idx, pnode_id, hf_sel, lf_sel, test_size, hf_horizon, cache_file),
+            daemon=True,
+        )
+        p.start()
+        p.join(PER_EVAL_TIMEOUT_S)
 
-        def _raise_timeout(_signum, _frame):
+        if p.is_alive():
+            p.terminate()
+            p.join(30)
             raise TimeoutError(
                 f"Evaluation idx={idx} exceeded timeout ({PER_EVAL_TIMEOUT_S}s)"
             )
 
-        old_handler = signal.getsignal(signal.SIGALRM)
-        signal.signal(signal.SIGALRM, _raise_timeout)
-        signal.alarm(int(PER_EVAL_TIMEOUT_S))
-        try:
-            return _eval_one_ensemble(
-                pnode_id,
-                hf_sel,
-                lf_sel,
-                test_size,
-                hf_horizon,
-                cache_file,
-            )
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
+        if q.empty():
+            raise RuntimeError(f"Evaluation idx={idx} finished but produced no result")
+
+        status, payload = q.get()
+        if status == "ok":
+            return payload
+        raise RuntimeError(payload)
     except BaseException:
         # If the worker is dying due to a normal Python exception (not segfault/OOM),
         # this prints a full traceback into the Slurm log.
@@ -161,7 +188,6 @@ def random_test_hf_lf_ensemble_combinations(
     hf_horizon: int = 6,
     seed: int | None = None,
     max_workers: int | None = None,
-    stagger_s: float = 0.0,
     parallel: bool = True,
 ) -> pd.DataFrame:
     """Randomly sample HF/LF ensembles and evaluate via two-stage stochastic MPC.
@@ -221,7 +247,6 @@ def random_test_hf_lf_ensemble_combinations(
                 test_size,
                 hf_horizon,
                 cache_file,
-                float(stagger_s or 0.0),
             )
             for (idx, hf_sel, lf_sel) in tasks
         ]
@@ -258,7 +283,6 @@ def random_test_hf_lf_ensemble_combinations(
                             test_size,
                             hf_horizon,
                             cache_file,
-                            float(stagger_s or 0.0),
                         )
                     )
                 )
