@@ -307,7 +307,6 @@ def test_and_write_ensemble_combos(
     seed,
     run_name: str = None,
     max_workers: int | None = None,
-    stagger_s: float = 0.0,
 ):
     start = time.perf_counter()
     df = random_test_hf_lf_ensemble_combinations(
@@ -323,7 +322,6 @@ def test_and_write_ensemble_combos(
         hf_horizon=hf_horizon,
         seed=seed,
         max_workers=max_workers,
-        stagger_s=stagger_s,
         parallel=True,
     )
     elapsed = time.perf_counter() - start
@@ -408,7 +406,6 @@ def main(argv: list[str] | None = None) -> None:
         hf_horizon = _env_int("HF_HORIZON", 6)
         seed = _env_opt_int("SEED", None)
         max_workers = _env_opt_int("MAX_WORKERS", None)
-        stagger_s = _env_float("STAGGER_S", 0.0)
         run_name = _env_opt_str("RUN_NAME", None)
     else:
         parser = argparse.ArgumentParser(description="Test best model combinations")
@@ -447,9 +444,7 @@ def main(argv: list[str] | None = None) -> None:
             default=None,
             help="Maximum workers",
         )
-        parser.add_argument(
-            "--stagger-s", type=float, default=0.0, help="Stagger time in seconds"
-        )
+
         parser.add_argument(
             "--run-name",
             type=lambda x: x if x.lower() != "none" else None,
@@ -468,7 +463,6 @@ def main(argv: list[str] | None = None) -> None:
         hf_horizon = args.hf_horizon
         seed = args.seed
         max_workers = args.max_workers
-        stagger_s = args.stagger_s
         run_name = args.run_name
 
     test_and_write_ensemble_combos(
@@ -482,7 +476,6 @@ def main(argv: list[str] | None = None) -> None:
         hf_horizon=hf_horizon,
         seed=seed,
         max_workers=max_workers,
-        stagger_s=stagger_s,
         run_name=run_name,
     )
 
