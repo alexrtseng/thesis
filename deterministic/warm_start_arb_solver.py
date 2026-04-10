@@ -310,16 +310,23 @@ def warm_battery_arb_benchmark(
 
 
 if __name__ == "__main__":
-    # Simple benchmark invocation
-    benchmark_stats = warm_battery_arb_benchmark(
-        hf_horizon_hours=12,
-        lf_horizon_hours=12,
-        start=pd.Timestamp(year=2024, month=1, day=1, tz="UTC"),
-        end=pd.Timestamp(year=2024, month=1, day=15, tz="UTC"),
-        pnode_id=2156113094,
-        use_lf_avg=False,
-        require_equivalent_soe=False,
-        verbose=False,
-    )
-    # Optional: print structured dict
-    print("Benchmark summary:", benchmark_stats)
+    results = []
+    for hf in [4, 8, 16, 32]:
+        print(f"\n--- Running hf_horizon={hf}h ---")
+        stats = warm_battery_arb_benchmark(
+            hf_horizon_hours=hf,
+            lf_horizon_hours=0,
+            start=pd.Timestamp(year=2024, month=1, day=1, tz="UTC"),
+            end=pd.Timestamp(year=2024, month=1, day=15, tz="UTC"),
+            pnode_id=2156113094,
+            use_lf_avg=False,
+            require_equivalent_soe=False,
+            verbose=False,
+        )
+        results.append((hf, stats))
+
+    print("\n=== Scaling Summary ===")
+    print(f"{'HF Horizon':>10} | {'Warm (s)':>10} | {'Cold (s)':>10} | {'Speedup':>8} | {'Warm $':>12} | {'Cold $':>12}")
+    print("-" * 75)
+    for hf, s in results:
+        print(f"{hf:>10}h | {s['warm_seconds']:>10.4f} | {s['cold_seconds']:>10.4f} | {s['speedup']:>8.2f}x | ${s['warm_value']:>11,.2f} | ${s['cold_value']:>11,.2f}")
